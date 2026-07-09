@@ -44,6 +44,23 @@ public static class SummaryFilter
         return filtered;
     }
 
+    /// <summary>
+    /// Returns a filtered deep clone of <paramref name="resource"/> per the FHIR `_elements` semantics:
+    /// keeps only top-level properties named in <paramref name="elements"/>, plus (when
+    /// <paramref name="includeMandatory"/> is set) any top-level property whose element definition is
+    /// mandatory. The original resource is left unmodified.
+    /// </summary>
+    public static ResourceJsonNode ApplyElements(
+        ResourceJsonNode resource, IFhirSchemaProvider schema, IReadOnlyList<string> elements, bool includeMandatory = true)
+    {
+        JsonObject clone = resource.MutableNode.DeepClone().AsObject();
+        RemoveNonElementsTopLevelProperties(clone, schema, elements, includeMandatory);
+
+        ResourceJsonNode filtered = JsonSourceNodeFactory.Parse((JsonNode)clone);
+        AppendSubsettedTag(filtered);
+        return filtered;
+    }
+
     // Removes only direct (top-level) properties of the resource whose element definition is not
     // in-summary. Kept complex properties retain their full subtree unchanged - the InSummary filter
     // is not re-applied recursively inside them.
@@ -63,6 +80,28 @@ public static class SummaryFilter
             {
                 clone.Remove(key);
             }
+        }
+    }
+
+    // Removes only direct (top-level) properties of the resource that are neither requested in the
+    // `_elements` list nor mandatory. Kept complex properties retain their full subtree unchanged - the
+    // filter is not re-applied recursively inside them.
+    private static void RemoveNonElementsTopLevelProperties(
+        JsonObject clone, IFhirSchemaProvider schema, IReadOnlyList<string> elements, bool includeMandatory)
+    {
+        string resourceType = clone["resourceType"]?.GetValue<string>() ?? string.Empty;
+        IType type = schema.GetTypeDefinition(resourceType)
+            ?? throw new NotSupportedException($"Unknown resource type '{resourceType}'");
+
+        Dictionary<string, IType> childrenByName = type.Children.ToDictionary(c => c.Info.Name);
+        HashSet<string> requestedElements = new(elements, StringComparer.Ordinal);
+
+        foreach (string key in clone.Select(kv => kv.Key).ToList())
+        {
+            string baseName = key.StartsWith('_') ? key[1..] : key;
+            if (AlwaysKept.Contains(baseName) || requestedElements.Contains(baseName)) continue;
+            if (includeMandatory && childrenByName.TryGetValue(baseName, out IType? child) && child.IsRequired) continue;
+            clone.Remove(key);
         }
     }
 

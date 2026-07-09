@@ -41,12 +41,17 @@ public static class SerializationUtils
         }
     }
 
+    // `_elements` takes precedence over `_summary` when both are supplied - the FHIR spec allows either
+    // per request but rarely both, and nothing in this codebase yet passes both at once.
     public static string SerializeFhir(
-        ResourceJsonNode instance, IFhirSchemaProvider schema, string format, bool pretty, string summaryFlag = "")
+        ResourceJsonNode instance, IFhirSchemaProvider schema, string format, bool pretty,
+        string summaryFlag = "", IReadOnlyList<string>? elements = null)
     {
-        ResourceJsonNode toSerialize = string.IsNullOrEmpty(summaryFlag) || summaryFlag == "count"
-            ? instance
-            : SummaryFilter.Apply(instance, schema, summaryFlag);
+        ResourceJsonNode toSerialize = elements is { Count: > 0 }
+            ? SummaryFilter.ApplyElements(instance, schema, elements)
+            : string.IsNullOrEmpty(summaryFlag) || summaryFlag == "count"
+                ? instance
+                : SummaryFilter.Apply(instance, schema, summaryFlag);
         return SniffFormat(format, "{") switch
         {
             "json" => toSerialize.SerializeToString(pretty),

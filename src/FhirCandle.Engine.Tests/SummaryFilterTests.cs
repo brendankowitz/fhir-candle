@@ -94,4 +94,85 @@ public class SummaryFilterTests
         json.ShouldContain("\"name\"");
         json.ShouldNotContain("\"SUBSETTED\"");
     }
+
+    [Fact]
+    public void ApplyElements_KeepsRequestedElement_RemovesOthers_AddsSubsettedTag()
+    {
+        ResourceJsonNode patient = ParsePatient();
+
+        ResourceJsonNode result = SummaryFilter.ApplyElements(patient, R4, ["name"]);
+        string json = result.SerializeToString();
+
+        json.ShouldContain("\"name\"");
+        json.ShouldContain("\"id\"");
+        json.ShouldContain("\"resourceType\"");
+        json.ShouldNotContain("\"text\"");
+        json.ShouldNotContain("\"photo\"");
+        json.ShouldContain("\"SUBSETTED\"");
+        json.ShouldContain("http://terminology.hl7.org/CodeSystem/v3-ObservationValue");
+
+        patient.SerializeToString().ShouldContain("\"photo\"");
+    }
+
+    [Fact]
+    public void ApplyElements_KeepsMandatoryElement_EvenWhenNotRequested()
+    {
+        // Observation.status and Observation.code are both mandatory (min=1) top-level elements in R4;
+        // Patient has no mandatory top-level elements, so a resource type with real cardinality
+        // constraints is needed to exercise the includeMandatory path.
+        const string observationJson =
+            """
+            {
+              "resourceType": "Observation",
+              "id": "o1",
+              "status": "final",
+              "code": {"text": "Vitals"},
+              "subject": {"reference": "Patient/p1"}
+            }
+            """;
+        SerializationUtils.TryDeserializeFhir(observationJson, "json", out ResourceJsonNode? observation, out _);
+
+        ResourceJsonNode result = SummaryFilter.ApplyElements(observation!, R4, ["subject"]);
+        string json = result.SerializeToString();
+
+        json.ShouldContain("\"subject\"");
+        json.ShouldContain("\"status\"");
+        json.ShouldContain("\"code\"");
+    }
+
+    [Fact]
+    public void ApplyElements_IncludeMandatoryFalse_OmitsUnrequestedMandatoryElement()
+    {
+        const string observationJson =
+            """
+            {
+              "resourceType": "Observation",
+              "id": "o1",
+              "status": "final",
+              "code": {"text": "Vitals"},
+              "subject": {"reference": "Patient/p1"}
+            }
+            """;
+        SerializationUtils.TryDeserializeFhir(observationJson, "json", out ResourceJsonNode? observation, out _);
+
+        ResourceJsonNode result = SummaryFilter.ApplyElements(observation!, R4, ["subject"], includeMandatory: false);
+        string json = result.SerializeToString();
+
+        json.ShouldContain("\"subject\"");
+        json.ShouldNotContain("\"status\"");
+        json.ShouldNotContain("\"Vitals\"");
+    }
+
+    [Fact]
+    public void ApplyElements_OriginalResourceUnmutated()
+    {
+        ResourceJsonNode patient = ParsePatient();
+
+        SummaryFilter.ApplyElements(patient, R4, ["name"]);
+
+        string json = patient.SerializeToString();
+        json.ShouldContain("\"photo\"");
+        json.ShouldContain("\"text\"");
+        json.ShouldNotContain("\"SUBSETTED\"");
+    }
 }
