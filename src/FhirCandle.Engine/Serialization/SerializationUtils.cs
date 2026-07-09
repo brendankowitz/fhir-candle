@@ -44,7 +44,9 @@ public static class SerializationUtils
     public static string SerializeFhir(
         ResourceJsonNode instance, IFhirSchemaProvider schema, string format, bool pretty, string summaryFlag = "")
     {
-        ResourceJsonNode toSerialize = instance;   // summaryFlag handling added in Task 4
+        ResourceJsonNode toSerialize = string.IsNullOrEmpty(summaryFlag) || summaryFlag == "count"
+            ? instance
+            : SummaryFilter.Apply(instance, schema, summaryFlag);
         return SniffFormat(format, "{") switch
         {
             "json" => toSerialize.SerializeToString(pretty),
