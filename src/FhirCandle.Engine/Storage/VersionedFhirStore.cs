@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
 using FhirCandle.Models;
@@ -11,6 +12,7 @@ using FhirCandle.Strict;
 using FhirCandle.Utils;
 using Ignixa.Abstractions;
 using Ignixa.Search.Models;
+using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -1086,12 +1088,389 @@ public sealed class VersionedFhirStore : IFhirStore
         StatusCode = HttpStatusCode.NotImplemented,
     };
 
-    /// <summary>Not yet implemented - Bundle batch/transaction processing is Task 9.</summary>
+    /// <inheritdoc/>
     public bool ProcessBundle(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("ProcessBundle: Bundle batch/transaction processing is implemented in a later task.");
-        return false;
+        if (!TryDeserializeSource(ctx, out ResourceJsonNode? content, out response))
+        {
+            return false;
+        }
+
+        if (content!.ResourceType != "Bundle")
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Cannot process non-Bundle resource type ({content.ResourceType}) as a Bundle",
+                    OperationOutcomeJsonNode.IssueType.Invalid),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            response = SerializeResponse(ctx, response);
+            return false;
+        }
+
+        BundleJsonNode requestBundle = content is BundleJsonNode typed
+            ? typed
+            : new BundleJsonNode(content.MutableNode, content.FhirVersion);
+
+        bool success = DoProcessBundle(ctx, requestBundle, out response);
+        response = SerializeResponse(ctx, response);
+        return success;
     }
+
+    /// <summary>Executes the process-bundle operation for an already-typed request bundle, without
+    /// serializing the response.</summary>
+    internal bool DoProcessBundle(FhirRequestContext ctx, BundleJsonNode requestBundle, out FhirResponseContext response)
+    {
+        var responseBundle = new BundleJsonNode { Id = Guid.NewGuid().ToString() };
+
+        switch (requestBundle.Type)
+        {
+            case BundleJsonNode.BundleType.Transaction:
+                responseBundle.Type = BundleJsonNode.BundleType.TransactionResponse;
+                ProcessTransaction(ctx, requestBundle, responseBundle);
+                break;
+
+            case BundleJsonNode.BundleType.Batch:
+                responseBundle.Type = BundleJsonNode.BundleType.BatchResponse;
+                ProcessBatch(ctx, requestBundle, responseBundle);
+                break;
+
+            default:
+                response = new()
+                {
+                    Outcome = SerializationUtils.BuildOutcomeForRequest(
+                        HttpStatusCode.UnprocessableEntity,
+                        $"Unsupported Bundle process request! Type: {requestBundle.Type}",
+                        OperationOutcomeJsonNode.IssueType.NotSupported),
+                    StatusCode = HttpStatusCode.UnprocessableEntity,
+                };
+                return false;
+        }
+
+        response = new()
+        {
+            Resource = responseBundle,
+            ResourceType = "Bundle",
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, $"Processed {requestBundle.Type} bundle"),
+            StatusCode = HttpStatusCode.OK,
+        };
+        return true;
+    }
+
+    /// <summary>Processes a transaction bundle: reassigns POST-entry ids and rewrites same-bundle
+    /// references (see <see cref="ApplyTransactionIdReassignment"/>), then dispatches entries in
+    /// FHIR's required order (DELETE, POST, PUT/PATCH, GET/HEAD, then anything unrecognized).</summary>
+    private void ProcessTransaction(FhirRequestContext ctx, BundleJsonNode transaction, BundleJsonNode responseBundle)
+    {
+        List<BundleComponentJsonNode> entries = transaction.Entry.ToList();
+
+        ApplyTransactionIdReassignment(entries);
+
+        foreach (BundleComponentJsonNode entry in entries.OrderBy(TransactionMethodPriority))
+        {
+            ProcessEntry(ctx, entry, responseBundle, forceAllowExistingId: true);
+        }
+    }
+
+    /// <summary>FHIR transaction processing order: DELETE, POST, PUT/PATCH, GET/HEAD, then anything
+    /// with a missing or unrecognized request method (never dropped, unlike the old file's literal
+    /// port would have done - each still reaches <see cref="ProcessEntry"/> and gets a proper error
+    /// entry rather than being silently skipped).</summary>
+    private static int TransactionMethodPriority(BundleComponentJsonNode entry) =>
+        entry.Request?.Method?.ToUpperInvariant() switch
+        {
+            "DELETE" => 0,
+            "POST" => 1,
+            "PUT" or "PATCH" => 2,
+            "GET" or "HEAD" => 3,
+            _ => 4,
+        };
+
+    /// <summary>Processes a batch bundle: every entry is dispatched independently, in bundle order,
+    /// with no id reassignment or cross-entry reference rewriting.</summary>
+    private void ProcessBatch(FhirRequestContext ctx, BundleJsonNode batch, BundleJsonNode responseBundle)
+    {
+        foreach (BundleComponentJsonNode entry in batch.Entry)
+        {
+            ProcessEntry(ctx, entry, responseBundle, forceAllowExistingId: false);
+        }
+    }
+
+    /// <summary>Reassigns server-side ids to every POST entry carrying a resource (FHIR transactions
+    /// ignore client-supplied ids on POST, exactly like a top-level create), then rewrites every
+    /// entry's resource so that literal <c>reference</c> strings pointing at a reassigned entry's
+    /// <c>fullUrl</c> or original <c>ResourceType/id</c> are updated to the new <c>ResourceType/newId</c>,
+    /// and fixes any other entry's request URL whose last path segment names a reassigned original id.
+    /// Batch bundles never call this - only transactions get id reassignment/reference rewriting.</summary>
+    private static void ApplyTransactionIdReassignment(List<BundleComponentJsonNode> entries)
+    {
+        var recs = new List<(string? FullUrl, string? OriginalId, string ResourceType, string NewId)>();
+
+        foreach (BundleComponentJsonNode entry in entries)
+        {
+            BundleComponentRequestJsonNode? request = entry.Request;
+            ResourceJsonNode? resource = entry.Resource;
+
+            if (request is null || resource is null ||
+                !string.Equals(request.Method, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string newId = Guid.NewGuid().ToString();
+            recs.Add((
+                string.IsNullOrEmpty(entry.FullUrl) ? null : entry.FullUrl,
+                string.IsNullOrEmpty(resource.Id) ? null : resource.Id,
+                resource.ResourceType,
+                newId));
+
+            // FHIR REST: the server always assigns a new id to a POST'd resource inside a
+            // transaction, ignoring whatever id the client supplied.
+            resource.Id = newId;
+        }
+
+        if (recs.Count == 0)
+        {
+            return;
+        }
+
+        var referenceMap = new Dictionary<string, string>();
+        var originalIdSegmentMap = new Dictionary<string, string>();
+
+        foreach (var rec in recs)
+        {
+            string newReference = $"{rec.ResourceType}/{rec.NewId}";
+
+            if (rec.FullUrl is not null)
+            {
+                referenceMap[rec.FullUrl] = newReference;
+            }
+
+            if (rec.OriginalId is not null)
+            {
+                referenceMap[$"{rec.ResourceType}/{rec.OriginalId}"] = newReference;
+                originalIdSegmentMap[rec.OriginalId] = rec.NewId;
+            }
+        }
+
+        foreach (BundleComponentJsonNode entry in entries)
+        {
+            BundleComponentRequestJsonNode? request = entry.Request;
+            if (request is not null && !string.IsNullOrEmpty(request.Url))
+            {
+                string[] urlParts = request.Url.Split('?');
+                string[] segments = urlParts[0].Split('/');
+                string idSegment = segments[^1];
+
+                if (originalIdSegmentMap.TryGetValue(idSegment, out string? newIdForUrl))
+                {
+                    segments[^1] = newIdForUrl;
+                    string newPath = string.Join('/', segments);
+                    request.Url = urlParts.Length > 1 ? $"{newPath}?{urlParts[1]}" : newPath;
+                }
+            }
+
+            ResourceJsonNode? resource = entry.Resource;
+            if (resource is not null)
+            {
+                RewriteReferences(resource.MutableNode, referenceMap);
+            }
+        }
+    }
+
+    /// <summary>Recursively rewrites literal <c>reference</c> string properties anywhere in
+    /// <paramref name="node"/>'s tree that exactly match a key in <paramref name="map"/>.</summary>
+    private static void RewriteReferences(JsonNode? node, IReadOnlyDictionary<string, string> map)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                if (obj.TryGetPropertyValue("reference", out JsonNode? rv)
+                    && rv is JsonValue v && v.TryGetValue(out string? r)
+                    && r is not null && map.TryGetValue(r, out string? replacement))
+                {
+                    obj["reference"] = replacement;
+                }
+                foreach (var kv in obj.ToList()) RewriteReferences(kv.Value, map);
+                break;
+            case JsonArray arr:
+                foreach (JsonNode? item in arr) RewriteReferences(item, map);
+                break;
+        }
+    }
+
+    /// <summary>Dispatches a single bundle entry's request through <see cref="PerformInteraction"/> and
+    /// appends the corresponding response entry to <paramref name="responseBundle"/>. Shared by both
+    /// <see cref="ProcessTransaction"/> (<paramref name="forceAllowExistingId"/> always true, since ids
+    /// were already reassigned/agreed upon in the pre-pass) and <see cref="ProcessBatch"/> (always false,
+    /// ordinary per-entry semantics).</summary>
+    private void ProcessEntry(FhirRequestContext ctx, BundleComponentJsonNode entry, BundleJsonNode responseBundle, bool forceAllowExistingId)
+    {
+        BundleComponentRequestJsonNode? request = entry.Request;
+
+        if (request is null)
+        {
+            responseBundle.Entry.Add(new BundleComponentJsonNode
+            {
+                FullUrl = entry.FullUrl,
+                Response = new BundleComponentResponseJsonNode
+                {
+                    Status = GetResponseStatus(HttpStatusCode.BadRequest),
+                    Outcome = SerializationUtils.BuildOutcomeForRequest(
+                        HttpStatusCode.UnprocessableEntity,
+                        "Entry is missing a request",
+                        OperationOutcomeJsonNode.IssueType.Required),
+                },
+            });
+            return;
+        }
+
+        JsonObject requestObj = request.MutableNode;
+
+        // `entry.Resource` (if present) is a child of the incoming request bundle's own JsonNode tree.
+        // Cloning it before it can be stored keeps the stored resource an independent tree - otherwise
+        // it would carry a permanent parent-link to this (otherwise transient) request bundle, and
+        // System.Text.Json.Nodes.JsonNode's single-parent invariant would then reject ever embedding it
+        // in a future response (search results, other transactions, etc.).
+        ResourceJsonNode? entryResource = entry.Resource;
+        object? sourceForDispatch = entryResource is null
+            ? null
+            : JsonSourceNodeFactory.Parse((JsonNode)entryResource.MutableNode.DeepClone());
+
+        FhirRequestContext entryCtx = new()
+        {
+            TenantName = ctx.TenantName,
+            Store = ctx.Store,
+            Authorization = ctx.Authorization,
+            RequestHeaders = ctx.RequestHeaders,
+            Forwarded = ctx.Forwarded,
+            HttpMethod = request.Method ?? string.Empty,
+            Url = request.Url ?? string.Empty,
+            IfMatch = GetOptionalString(requestObj, "ifMatch"),
+            IfModifiedSince = GetOptionalString(requestObj, "ifModifiedSince"),
+            IfNoneMatch = GetOptionalString(requestObj, "ifNoneMatch"),
+            IfNoneExist = GetOptionalString(requestObj, "ifNoneExist"),
+            SourceObject = sourceForDispatch,
+        };
+
+        if (entryCtx.Interaction is null)
+        {
+            responseBundle.Entry.Add(new BundleComponentJsonNode
+            {
+                FullUrl = entry.FullUrl,
+                Response = new BundleComponentResponseJsonNode
+                {
+                    Status = GetResponseStatus(HttpStatusCode.InternalServerError),
+                    Outcome = SerializationUtils.BuildOutcomeForRequest(
+                        HttpStatusCode.NotImplemented,
+                        $"Request could not be parsed to known interaction: {request.Method} {request.Url}",
+                        OperationOutcomeJsonNode.IssueType.NotSupported),
+                },
+            });
+            return;
+        }
+
+        // No bulk-load-suppression flag exists yet in this port (unlike the old file's `_loadState`
+        // gate) - every entry's authorization is checked unconditionally.
+        if (!ctx.IsAuthorized())
+        {
+            responseBundle.Entry.Add(new BundleComponentJsonNode
+            {
+                FullUrl = entry.FullUrl,
+                Response = new BundleComponentResponseJsonNode
+                {
+                    Status = GetResponseStatus(HttpStatusCode.Unauthorized),
+                    Outcome = SerializationUtils.BuildOutcomeForRequest(
+                        HttpStatusCode.Unauthorized,
+                        $"Unauthorized request: {request.Method} {request.Url}, parsed interaction: {entryCtx.Interaction}",
+                        OperationOutcomeJsonNode.IssueType.Forbidden),
+                },
+            });
+            return;
+        }
+
+        bool opSuccess = PerformInteraction(entryCtx, out FhirResponseContext opResponse, serializeReturn: false, forceAllowExistingId: forceAllowExistingId);
+
+        ResourceJsonNode? responseResource = opSuccess ? opResponse.Resource as ResourceJsonNode : null;
+
+        var responseComponent = new BundleComponentResponseJsonNode
+        {
+            Status = GetResponseStatus(opResponse.StatusCode ?? (opSuccess ? HttpStatusCode.OK : HttpStatusCode.InternalServerError)),
+        };
+
+        if (opSuccess)
+        {
+            if (opResponse.Outcome is ResourceJsonNode successOutcome)
+            {
+                responseComponent.Outcome = successOutcome;
+            }
+
+            if (!string.IsNullOrEmpty(opResponse.ETag))
+            {
+                responseComponent.Etag = opResponse.ETag;
+            }
+
+            if (responseResource?.Meta.LastUpdated is { } lastUpdated)
+            {
+                responseComponent.LastModified = lastUpdated;
+            }
+
+            if (!string.IsNullOrEmpty(opResponse.Location))
+            {
+                responseComponent.Location = opResponse.Location;
+            }
+        }
+        else if (opResponse.Outcome is OperationOutcomeJsonNode failureOutcome)
+        {
+            failureOutcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+            {
+                Severity = OperationOutcomeJsonNode.IssueSeverity.Error,
+                Code = OperationOutcomeJsonNode.IssueType.NotSupported,
+                Diagnostics = $"Unsupported request: {request.Method} {request.Url}, parsed interaction: {entryCtx.Interaction}",
+            });
+            responseComponent.Outcome = failureOutcome;
+        }
+        else
+        {
+            responseComponent.Outcome = SerializationUtils.BuildOutcomeForRequest(
+                HttpStatusCode.NotImplemented,
+                $"Unsupported request: {request.Method} {request.Url}, parsed interaction: {entryCtx.Interaction}",
+                OperationOutcomeJsonNode.IssueType.NotSupported);
+        }
+
+        var responseEntry = new BundleComponentJsonNode
+        {
+            FullUrl = entry.FullUrl,
+            Response = responseComponent,
+        };
+
+        if (responseResource is not null)
+        {
+            // System.Text.Json.Nodes.JsonNode enforces a single-parent invariant: `responseResource`
+            // may be the exact instance held long-term in `_resourceStore` (e.g. an existing match
+            // returned by a conditional create, or the just-stored resource itself), so attaching it
+            // directly here would permanently tie it to this transient response bundle and break any
+            // later attempt to embed it elsewhere (another search, another transaction). Clone it.
+            responseEntry.Resource = JsonSourceNodeFactory.Parse((JsonNode)responseResource.MutableNode.DeepClone());
+        }
+
+        responseBundle.Entry.Add(responseEntry);
+    }
+
+    /// <summary>Reads an optional string property (e.g. <c>ifMatch</c>, <c>ifNoneExist</c>) directly off
+    /// a raw request <see cref="JsonObject"/> - these are not exposed as typed properties on
+    /// <see cref="BundleComponentRequestJsonNode"/>, which only surfaces <c>method</c>/<c>url</c>.</summary>
+    private static string GetOptionalString(JsonObject obj, string propertyName) =>
+        obj.TryGetPropertyValue(propertyName, out JsonNode? node) &&
+        node is JsonValue value &&
+        value.TryGetValue(out string? s) &&
+        s is not null
+            ? s
+            : string.Empty;
+
+    private static string GetResponseStatus(HttpStatusCode sc) => $"{(int)sc} {sc}";
 
     /// <summary>Not yet implemented - CapabilityStatement generation is Task 10.</summary>
     public bool GetMetadata(FhirRequestContext ctx, out FhirResponseContext response)
