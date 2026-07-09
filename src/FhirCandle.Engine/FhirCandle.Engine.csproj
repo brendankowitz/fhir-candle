@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\fhir-candle.props" />
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>FhirCandle.Engine</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Ignixa.Abstractions" Version="$(IgnixaVersion)" />
+    <PackageReference Include="Ignixa.Serialization" Version="$(IgnixaVersion)" />
+    <PackageReference Include="Ignixa.FhirPath" Version="$(IgnixaVersion)" />
+    <PackageReference Include="Ignixa.Search" Version="$(IgnixaVersion)" />
+    <PackageReference Include="Ignixa.Specification" Version="$(IgnixaVersion)" />
+    <PackageReference Include="Ignixa.Validation" Version="$(IgnixaVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FhirStore.Common\FhirCandle.Common.csproj" />
+  </ItemGroup>
+</Project>
