@@ -389,3 +389,6 @@ msbuild.wrn
 /scratch
 
 *.local.json
+
+# Claude Code superpowers scratch state
+.superpowers/
