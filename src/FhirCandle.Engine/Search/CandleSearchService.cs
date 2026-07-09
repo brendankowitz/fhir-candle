@@ -1,6 +1,7 @@
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.Search.Definition;
+using Ignixa.Search.Expressions;
 using Ignixa.Search.Expressions.Parsers;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Indexing.SearchValues;
@@ -25,6 +26,7 @@ public sealed class CandleSearchService
     private readonly IFhirSchemaProvider _schema;
     private readonly SearchOptionsBuilder _optionsBuilder;
     private readonly ISearchIndexer _indexer;
+    private readonly ExpressionParser _expressionParser;
 
     public CandleSearchService(IFhirSchemaProvider schema, ILoggerFactory loggerFactory)
     {
@@ -35,12 +37,12 @@ public sealed class CandleSearchService
         Definitions = new SearchParameterDefinitionManager(schema, loggerFactory.CreateLogger<SearchParameterDefinitionManager>());
 
         ISearchParameterDefinitionManager.SearchableSearchParameterDefinitionManagerResolver resolver = () => Definitions;
-        var expressionParser = new ExpressionParser(
+        _expressionParser = new ExpressionParser(
             resolver,
             new SearchParameterExpressionParser(new ReferenceSearchValueParser(schema), schema),
             schema);
 
-        _optionsBuilder = new SearchOptionsBuilder(expressionParser, Definitions);
+        _optionsBuilder = new SearchOptionsBuilder(_expressionParser, Definitions);
         _indexer = SearchIndexerFactory.CreateInstance(schema, loggerFactory, Definitions);
     }
 
@@ -52,7 +54,11 @@ public sealed class CandleSearchService
     {
         IReadOnlyList<QueryParameter> parameters = QueryParser.Parse(queryString);
 
+        string[] resourceTypes = resourceType is null ? ["Resource"] : [resourceType];
+
         var customFilters = new List<CustomModifierFilter>();
+        var chainedExpressions = new List<Expression>();
+        var chainedFailures = new List<string>();
         var remainingParameters = new List<QueryParameter>(parameters.Count);
 
         foreach (QueryParameter parameter in parameters)
@@ -60,6 +66,17 @@ public sealed class CandleSearchService
             if (TryExtractCustomModifier(parameter.Name, out string code, out string modifier))
             {
                 customFilters.Add(new CustomModifierFilter(code, modifier, parameter.Value));
+            }
+            else if (IsChainedOrHasParameter(parameter.Name))
+            {
+                try
+                {
+                    chainedExpressions.Add(_expressionParser.Parse(resourceTypes, parameter.Name, parameter.Value));
+                }
+                catch (Exception ex) when (ex is SearchParameterNotSupportedException or InvalidSearchOperationException)
+                {
+                    chainedFailures.Add(parameter.Name);
+                }
             }
             else
             {
@@ -73,9 +90,16 @@ public sealed class CandleSearchService
         {
             Options = options,
             CustomFilters = customFilters,
-            UnknownParameters = options.UnsupportedParams,
+            ChainedExpressions = chainedExpressions,
+            UnknownParameters = chainedFailures.Count == 0
+                ? options.UnsupportedParams
+                : [.. options.UnsupportedParams, .. chainedFailures],
         };
     }
+
+    private static bool IsChainedOrHasParameter(string parameterName) =>
+        parameterName.Contains('.', StringComparison.Ordinal) ||
+        parameterName.StartsWith("_has:", StringComparison.Ordinal);
 
     public SearchPredicate CompilePredicate(ParsedQuery query) =>
         query.Options.Expression is null
@@ -189,5 +213,6 @@ public sealed class ParsedQuery
 {
     public required SearchOptions Options { get; init; }
     public required IReadOnlyList<CustomModifierFilter> CustomFilters { get; init; }
+    public required IReadOnlyList<Expression> ChainedExpressions { get; init; }
     public required IReadOnlyList<string> UnknownParameters { get; init; }
 }
