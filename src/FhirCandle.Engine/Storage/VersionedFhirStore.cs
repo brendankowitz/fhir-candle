@@ -4,6 +4,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
+using FhirCandle.Compartments;
 using FhirCandle.Models;
 using FhirCandle.Schema;
 using FhirCandle.Search;
@@ -11,6 +12,8 @@ using FhirCandle.Serialization;
 using FhirCandle.Strict;
 using FhirCandle.Utils;
 using Ignixa.Abstractions;
+using Ignixa.Search.Indexing;
+using Ignixa.Search.Indexing.SearchValues;
 using Ignixa.Search.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
@@ -27,12 +30,9 @@ namespace FhirCandle.Storage;
 /// </summary>
 /// <remarks>
 /// This is the Ignixa-model port of the core CRUD/search/dispatch surface of the old (Firely-based)
-/// <c>VersionedFhirStore</c>. Bundle processing (<see cref="ProcessBundle"/>) and CapabilityStatement
-/// generation (<see cref="GetMetadata"/>) are ported in later tasks (9 and 10 respectively) and are
-/// stubbed here with a <see cref="HttpStatusCode.NotImplemented"/> response. Subscription execution,
-/// compartment membership, and terminology (ValueSet) services do not exist yet anywhere in the new
-/// engine and are deferred to future tasks - see the per-member remarks below for exact extension
-/// points.
+/// <c>VersionedFhirStore</c>. Subscription execution and terminology (ValueSet) services do not exist
+/// yet anywhere in the new engine and are deferred to future tasks - see the per-member remarks below
+/// for exact extension points.
 /// </remarks>
 public sealed class VersionedFhirStore : IFhirStore
 {
@@ -41,6 +41,7 @@ public sealed class VersionedFhirStore : IFhirStore
     private static readonly Regex _fhirIdRegex = new("^[A-Za-z0-9\\-\\.]{1,64}$", RegexOptions.Compiled);
 
     private readonly Dictionary<string, ResourceStore> _store = [];
+    private readonly Dictionary<string, ParsedCompartment> _compartments = [];
     private readonly HashSet<string> _protectedResources = [];
     private readonly HashSet<string> _loadedDirectives = [];
     private readonly HashSet<string> _loadedPackageIds = [];
@@ -158,15 +159,24 @@ public sealed class VersionedFhirStore : IFhirStore
             rs.OnInstanceUpdated += (_, e) => RegisterInstanceUpdated(e.ResourceType, e.ResourceId);
             rs.OnInstanceDeleted += (_, e) => RegisterInstanceDeleted(e.ResourceType, e.ResourceId);
 
-            // Deferred: no compartment engine (Task 11) or terminology service (Task 12) exists yet
-            // to register these against. Subscribing here (rather than leaving the events unobserved)
-            // documents the exact extension point those tasks should use.
-            rs.OnCompartmentDefinitionChanged += (_, _) => { };
-            rs.OnCompartmentDefinitionRemoved += (_, _) => { };
+            rs.OnCompartmentDefinitionChanged += (_, resource) => RegisterCompartmentDefinition(resource);
+            rs.OnCompartmentDefinitionRemoved += (_, code) => RemoveCompartmentDefinition(code);
+
+            // Deferred: no terminology service (Task 12) exists yet to register these against.
+            // Subscribing here (rather than leaving the events unobserved) documents the exact
+            // extension point that task should use.
             rs.OnValueSetChanged += (_, _) => { };
             rs.OnValueSetRemoved += (_, _) => { };
 
             _store.Add(resourceType, rs);
+        }
+
+        foreach (ParsedCompartment compartment in CoreCompartmentSource.GetCompartments(_schema.Version))
+        {
+            if (_store.ContainsKey(compartment.CompartmentType))
+            {
+                _compartments[compartment.CompartmentType] = compartment;
+            }
         }
 
         if (config.LoadDirectory is not null)
@@ -884,7 +894,7 @@ public sealed class VersionedFhirStore : IFhirStore
 
         if (ctx.Authorization is not null)
         {
-            matches = FilterSearchResultsForAuth(matches);
+            matches = FilterSearchResultsForAuth(ctx, matches);
         }
 
         if (query.Options.Sort.Count > 0)
@@ -899,6 +909,23 @@ public sealed class VersionedFhirStore : IFhirStore
             selfLink = selfLink + "?" + searchQueryParams.TrimStart('?');
         }
 
+        BundleJsonNode bundle = BuildSearchBundle(ctx, query, matches, selfLink);
+
+        response = new()
+        {
+            Resource = bundle,
+            ResourceType = "Bundle",
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "Type search successful"),
+            StatusCode = HttpStatusCode.OK,
+        };
+        return true;
+    }
+
+    /// <summary>Builds a searchset <see cref="BundleJsonNode"/> from already-filtered/sorted
+    /// <paramref name="matches"/>, resolving <c>_include</c>/<c>_revinclude</c> per <paramref name="query"/>.
+    /// Shared by <see cref="DoTypeSearch"/> and the compartment search paths.</summary>
+    private BundleJsonNode BuildSearchBundle(FhirRequestContext ctx, ParsedQuery query, List<ResourceJsonNode> matches, string selfLink)
+    {
         var bundle = new BundleJsonNode
         {
             Id = Guid.NewGuid().ToString(),
@@ -952,14 +979,7 @@ public sealed class VersionedFhirStore : IFhirStore
             }
         }
 
-        response = new()
-        {
-            Resource = bundle,
-            ResourceType = "Bundle",
-            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "Type search successful"),
-            StatusCode = HttpStatusCode.OK,
-        };
-        return true;
+        return bundle;
     }
 
     private static void AddIncludeEntry(BundleJsonNode bundle, FhirRequestContext ctx, ResourceJsonNode included, HashSet<string> addedIds)
@@ -978,12 +998,79 @@ public sealed class VersionedFhirStore : IFhirStore
     }
 
     /// <summary>
-    /// SMART-scope compartment filtering, deferred to Task 11: a real compartment engine does not
-    /// exist yet. Every required test in this task runs with no <see cref="AuthorizationInfo"/> on the
-    /// request, so this is never invoked by them; when it is invoked (an authorized request), results
-    /// pass through unfiltered rather than half-implementing compartment membership checks.
+    /// SMART-scope compartment filtering: authorized requests pass unfiltered when the user scope grants
+    /// blanket access, or when this is a Patient-compartment search whose id matches the launch patient
+    /// (already scoped by the compartment filter itself). Otherwise each resource must both belong to the
+    /// Patient compartment and satisfy a granted patient scope, checked via <see cref="IsInCompartment"/>
+    /// against the launch patient.
     /// </summary>
-    private List<ResourceJsonNode> FilterSearchResultsForAuth(List<ResourceJsonNode> resources) => resources;
+    private List<ResourceJsonNode> FilterSearchResultsForAuth(FhirRequestContext ctx, List<ResourceJsonNode> resources)
+    {
+        if (ctx.Authorization is null)
+        {
+            return resources;
+        }
+
+        if (ctx.Authorization.UserScopes.Contains("*.*") || ctx.Authorization.UserScopes.Contains("*.s"))
+        {
+            return resources;
+        }
+
+        if ((ctx.Interaction is Common.StoreInteractionCodes.CompartmentSearch or Common.StoreInteractionCodes.CompartmentTypeSearch) &&
+            (ctx.CompartmentType == "Patient") &&
+            ($"Patient/{ctx.Id}" == ctx.Authorization.LaunchPatient))
+        {
+            return resources;
+        }
+
+        return resources.Where(r => IsAuthorizedAsSearchMatch(ctx, r)).ToList();
+    }
+
+    private bool IsAuthorizedAsSearchMatch(FhirRequestContext ctx, ResourceJsonNode resource)
+    {
+        AuthorizationInfo authorization = ctx.Authorization!;
+
+        if (authorization.UserScopes.Contains("*.*") ||
+            authorization.UserScopes.Contains("*.s") ||
+            authorization.UserScopes.Contains(resource.ResourceType + ".*") ||
+            authorization.UserScopes.Contains(resource.ResourceType + ".s"))
+        {
+            return true;
+        }
+
+        if ((ctx.Interaction is Common.StoreInteractionCodes.CompartmentSearch or Common.StoreInteractionCodes.CompartmentTypeSearch) &&
+            (ctx.CompartmentType == "Patient") &&
+            ($"Patient/{ctx.Id}" == authorization.LaunchPatient))
+        {
+            return true;
+        }
+
+        if (!_compartments.TryGetValue("Patient", out ParsedCompartment? patientCompartment) ||
+            !patientCompartment.IncludedResources.TryGetValue(resource.ResourceType, out ParsedCompartment.IncludedResource? ir))
+        {
+            return false;
+        }
+
+        if (!authorization.PatientScopes.Contains("*.*") &&
+            !authorization.PatientScopes.Contains("*.s") &&
+            !authorization.PatientScopes.Contains(resource.ResourceType + ".*") &&
+            !authorization.PatientScopes.Contains(resource.ResourceType + ".s"))
+        {
+            return false;
+        }
+
+        if ((resource.ResourceType == "Patient") && ($"Patient/{resource.Id}" == authorization.LaunchPatient))
+        {
+            return true;
+        }
+
+        if (authorization.LaunchPatient.Split('/') is not [_, string launchPatientId])
+        {
+            return false;
+        }
+
+        return IsInCompartment(resource, ir, "Patient", launchPatientId);
+    }
 
     /// <summary>
     /// Resolves the effective <see cref="SearchParameterHandling"/> for a request: an explicit
@@ -1760,30 +1847,279 @@ public sealed class VersionedFhirStore : IFhirStore
         return false;
     }
 
-    /// <summary>Not yet implemented - compartment membership is Task 11.</summary>
+    /// <inheritdoc/>
     public bool CompartmentSearch(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("CompartmentSearch: compartment engine is implemented in a later task.");
-        return false;
+        bool success = DoCompartmentSearch(ctx, out response);
+        response = SerializeResponse(ctx, response);
+        return success;
     }
 
-    /// <summary>Not yet implemented - compartment membership is Task 11.</summary>
+    private bool DoCompartmentSearch(FhirRequestContext ctx, out FhirResponseContext response)
+    {
+        string searchQueryParams = string.IsNullOrEmpty(ctx.SourceContent) || (ctx.SourceFormat != "application/x-www-form-urlencoded")
+            ? ctx.UrlQuery
+            : ctx.SourceContent;
+
+        if (string.IsNullOrEmpty(ctx.CompartmentType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.BadRequest, "Compartment type is required for compartment search interactions", OperationOutcomeJsonNode.IssueType.Structure),
+                StatusCode = HttpStatusCode.BadRequest,
+            };
+            return false;
+        }
+
+        if (!_store.ContainsKey(ctx.CompartmentType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Compartment Resource type: {ctx.CompartmentType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!_compartments.TryGetValue(ctx.CompartmentType, out ParsedCompartment? compartment))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Compartment type: {ctx.CompartmentType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        var matches = new List<ResourceJsonNode>();
+
+        foreach ((string resourceType, ParsedCompartment.IncludedResource ir) in compartment.IncludedResources)
+        {
+            if (!_store.TryGetValue(resourceType, out ResourceStore? rs))
+            {
+                continue;
+            }
+
+            ParsedQuery typeQuery = _search.ParseQuery(resourceType, searchQueryParams);
+            matches.AddRange(rs.TypeSearch(typeQuery).Where(r => IsInCompartment(r, ir, ctx.CompartmentType, ctx.Id)));
+        }
+
+        if (ctx.Authorization is not null)
+        {
+            matches = FilterSearchResultsForAuth(ctx, matches);
+        }
+
+        // parsed once more against the compartment type itself for aggregate-level result options
+        // (sort/include/revinclude/summary/max-count), matching how the old file scoped these to the
+        // compartment resource's own store rather than any single matched type.
+        ParsedQuery aggregateQuery = _search.ParseQuery(ctx.CompartmentType, searchQueryParams);
+
+        if (aggregateQuery.Options.Sort.Count > 0)
+        {
+            var comparer = new FhirSortComparer(_schema, aggregateQuery.Options.Sort, _search.Definitions);
+            matches = matches.OrderBy(m => m, comparer).ToList();
+        }
+
+        string selfLink = $"{GetBaseUrl(ctx)}/{ctx.CompartmentType}/{ctx.Id}/*";
+        if (!string.IsNullOrEmpty(searchQueryParams))
+        {
+            selfLink = selfLink + "?" + searchQueryParams.TrimStart('?');
+        }
+
+        BundleJsonNode bundle = BuildSearchBundle(ctx, aggregateQuery, matches, selfLink);
+
+        response = new()
+        {
+            Resource = bundle,
+            ResourceType = "Bundle",
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "Compartment search successful"),
+            StatusCode = HttpStatusCode.OK,
+        };
+        return true;
+    }
+
+    /// <inheritdoc/>
     public bool CompartmentTypeSearch(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("CompartmentTypeSearch: compartment engine is implemented in a later task.");
-        return false;
+        bool success = DoCompartmentTypeSearch(ctx, out response);
+        response = SerializeResponse(ctx, response);
+        return success;
     }
 
-    /// <summary>Registers a compartment definition. Deferred to Task 11: there is no compartment
-    /// engine yet to register against, so this only validates resource shape.</summary>
-    public bool RegisterCompartmentDefinition(object compartmentDefinition) =>
-        compartmentDefinition is ResourceJsonNode { ResourceType: "CompartmentDefinition" };
-
-    /// <summary>Deferred to Task 11 (see <see cref="RegisterCompartmentDefinition"/>).</summary>
-    public void RemoveCompartmentDefinition(string compartmentType)
+    private bool DoCompartmentTypeSearch(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        // No compartment engine exists yet to remove a registration from.
+        string searchQueryParams = string.IsNullOrEmpty(ctx.SourceContent) || (ctx.SourceFormat != "application/x-www-form-urlencoded")
+            ? ctx.UrlQuery
+            : ctx.SourceContent;
+
+        if (string.IsNullOrEmpty(ctx.CompartmentType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.BadRequest, "Compartment type is required for compartment type search interactions", OperationOutcomeJsonNode.IssueType.Structure),
+                StatusCode = HttpStatusCode.BadRequest,
+            };
+            return false;
+        }
+
+        if (!_store.ContainsKey(ctx.CompartmentType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Compartment Resource type: {ctx.CompartmentType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!_compartments.TryGetValue(ctx.CompartmentType, out ParsedCompartment? compartment))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Compartment type: {ctx.CompartmentType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(ctx.ResourceType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.BadRequest, "Resource type is required for compartment type search interactions", OperationOutcomeJsonNode.IssueType.Structure),
+                StatusCode = HttpStatusCode.BadRequest,
+            };
+            return false;
+        }
+
+        if (!_store.TryGetValue(ctx.ResourceType, out ResourceStore? rs))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Resource type: {ctx.ResourceType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!compartment.IncludedResources.TryGetValue(ctx.ResourceType, out ParsedCompartment.IncludedResource? ir))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Resource type: {ctx.ResourceType} is not supported in compartment {ctx.CompartmentType}", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        ParsedQuery query = _search.ParseQuery(ctx.ResourceType, searchQueryParams);
+
+        if (query.UnknownParameters.Count > 0 && EffectiveSearchHandling(ctx) == SearchParameterHandling.Strict)
+        {
+            var issues = query.UnknownParameters
+                .Select(p => (StrictRuleCode.SearchUnknownParameter, $"Unknown search parameter '{p}' for this resource type.", OperationOutcomeJsonNode.IssueType.NotSupported))
+                .ToList();
+
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForStrictRules(HttpStatusCode.BadRequest, issues, _config.FhirVersion),
+                StatusCode = HttpStatusCode.BadRequest,
+            };
+            return false;
+        }
+
+        List<ResourceJsonNode> matches = rs.TypeSearch(query)
+            .Where(r => IsInCompartment(r, ir, ctx.CompartmentType, ctx.Id))
+            .ToList();
+
+        if (ctx.Authorization is not null)
+        {
+            matches = FilterSearchResultsForAuth(ctx, matches);
+        }
+
+        if (query.Options.Sort.Count > 0)
+        {
+            var comparer = new FhirSortComparer(_schema, query.Options.Sort, _search.Definitions);
+            matches = matches.OrderBy(m => m, comparer).ToList();
+        }
+
+        string selfLink = $"{GetBaseUrl(ctx)}/{ctx.CompartmentType}/{ctx.Id}/{ctx.ResourceType}";
+        if (!string.IsNullOrEmpty(searchQueryParams))
+        {
+            selfLink = selfLink + "?" + searchQueryParams.TrimStart('?');
+        }
+
+        BundleJsonNode bundle = BuildSearchBundle(ctx, query, matches, selfLink);
+
+        response = new()
+        {
+            Resource = bundle,
+            ResourceType = "Bundle",
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "Compartment type search successful"),
+            StatusCode = HttpStatusCode.OK,
+        };
+        return true;
     }
+
+    /// <summary>Tests whether <paramref name="resource"/> is a member of the compartment identified by
+    /// <paramref name="compartmentType"/>/<paramref name="compartmentId"/>: true if the resource's own
+    /// identity matches (the special <c>_id</c> membership code, from a CompartmentDefinition's
+    /// <c>{def}</c> parameter), or if any of <paramref name="includedResource"/>'s other search param
+    /// codes has a <see cref="ReferenceSearchValue"/> index entry pointing at the compartment instance
+    /// (the same index-scan approach <see cref="SearchExecutor"/> uses for <c>_revinclude</c>/<c>_has</c>).</summary>
+    private bool IsInCompartment(
+        ResourceJsonNode resource,
+        ParsedCompartment.IncludedResource includedResource,
+        string compartmentType,
+        string compartmentId)
+    {
+        if (includedResource.SearchParamCodes.Contains("_id") &&
+            string.Equals(resource.ResourceType, compartmentType, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(resource.Id, compartmentId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        IReadOnlyCollection<SearchIndexEntry> index = _search.Index(resource.ToElement(_schema));
+
+        return includedResource.SearchParamCodes.Any(code =>
+            code != "_id" &&
+            index.Any(entry =>
+                entry.Value is ReferenceSearchValue reference &&
+                string.Equals(entry.SearchParameter.Code, code, StringComparison.Ordinal) &&
+                string.Equals(reference.ResourceType, compartmentType, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(reference.ResourceId, compartmentId, StringComparison.Ordinal)));
+    }
+
+    /// <inheritdoc/>
+    public bool RegisterCompartmentDefinition(object compartmentDefinition)
+    {
+        if (compartmentDefinition is not ResourceJsonNode { ResourceType: "CompartmentDefinition" } node)
+        {
+            return false;
+        }
+
+        ParsedCompartment parsed;
+        try
+        {
+            parsed = new ParsedCompartment(node.ToElement(_schema));
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+
+        if (!_store.ContainsKey(parsed.CompartmentType))
+        {
+            return false;
+        }
+
+        _compartments[parsed.CompartmentType] = parsed;
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public void RemoveCompartmentDefinition(string compartmentType) => _compartments.Remove(compartmentType);
 
     /// <inheritdoc/>
     public bool SupportsResource(string resourceName) => _store.ContainsKey(resourceName);
