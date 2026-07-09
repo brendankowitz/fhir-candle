@@ -15,6 +15,7 @@ using Ignixa.Search.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
+using Ignixa.Specification.ValueSets.Normative;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Primitives;
 using SearchParameterHandling = FhirCandle.Client.CandleClientSettings.SearchParameterHandling;
@@ -59,6 +60,16 @@ public sealed class VersionedFhirStore : IFhirStore
     private CandleSearchService _search = null!;
     private int _maxResourceCount;
     private bool _hasDisposed;
+
+    /// <summary>Cached, already-serialized-shape CapabilityStatement (see <see cref="GetCapabilities"/>),
+    /// and whether it needs to be rebuilt. Starts stale so the first <see cref="GetMetadata"/> call
+    /// always builds it. Nothing in this port currently invalidates the cache after the first build - no
+    /// runtime SearchParameter registration exists yet against this store (unlike the old file's
+    /// <c>TrySetExecutableSearchParameter</c>/<c>TryRemoveExecutableSearchParameter</c>), so once built the
+    /// cache remains valid for the life of the store.</summary>
+    private bool _capabilitiesAreStale = true;
+    private ResourceJsonNode? _cachedCapabilityStatement;
+    private const string _capabilityStatementId = "metadata";
 
     /// <inheritdoc/>
     public event EventHandler<StoreInstanceEventArgs>? OnInstanceCreated;
@@ -1472,11 +1483,239 @@ public sealed class VersionedFhirStore : IFhirStore
 
     private static string GetResponseStatus(HttpStatusCode sc) => $"{(int)sc} {sc}";
 
-    /// <summary>Not yet implemented - CapabilityStatement generation is Task 10.</summary>
+    /// <inheritdoc/>
     public bool GetMetadata(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("GetMetadata: CapabilityStatement generation is implemented in a later task.");
-        return false;
+        ResourceJsonNode cs = GetCapabilities(ctx);
+
+        // No `meta` is ever set on the generated document (there is no backing store entry to version
+        // it against - see the deviation note on GetCapabilities), so ETag/LastModified stay empty.
+        // Deliberately avoid touching `cs.Meta` here: that property getter creates an empty `meta: {}`
+        // object on first access if none exists, which would otherwise leak into the serialized output.
+        response = new()
+        {
+            Resource = cs,
+            ResourceType = "CapabilityStatement",
+            Id = _capabilityStatementId,
+            Location = $"{GetBaseUrl(ctx)}/CapabilityStatement/{_capabilityStatementId}",
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "Retrieved current CapabilityStatement"),
+            StatusCode = HttpStatusCode.OK,
+        };
+
+        response = SerializeResponse(ctx, response);
+        return true;
+    }
+
+    /// <summary>Returns the current CapabilityStatement, rebuilding it if stale or if <paramref name="ctx"/>
+    /// carries reverse-proxy <see cref="FhirRequestContext.Forwarded"/> info (the generated document embeds
+    /// the request's base URL, so a forwarded request can never safely reuse the cache built for the
+    /// canonical base URL). Mirrors the old file's <c>GetCapabilities</c>/<c>generateCapabilities</c> split.</summary>
+    private ResourceJsonNode GetCapabilities(FhirRequestContext? ctx)
+    {
+        if (!_capabilitiesAreStale && (ctx?.Forwarded is null) && _cachedCapabilityStatement is not null)
+        {
+            return JsonSourceNodeFactory.Parse((JsonNode)_cachedCapabilityStatement.MutableNode.DeepClone());
+        }
+
+        return BuildCapabilityStatement(ctx);
+    }
+
+    /// <summary>Builds the CapabilityStatement as a raw <see cref="JsonObject"/> tree (there is no typed
+    /// <c>CapabilityStatementJsonNode</c> wrapper in Ignixa), then wraps it via
+    /// <see cref="JsonSourceNodeFactory"/>. Ports the old file's <c>generateCapabilities</c>: every
+    /// <c>CapabilityStatement.XComponent</c> becomes a <see cref="JsonObject"/> literal, and every Firely
+    /// enum (<c>TypeRestfulInteraction.Read</c>, <c>RestfulCapabilityMode.Server</c>, etc.) becomes its
+    /// FHIR wire-format string literal directly.</summary>
+    private ResourceJsonNode BuildCapabilityStatement(FhirRequestContext? ctx)
+    {
+        string root = GetBaseUrl(ctx);
+        string smartRoot = FhirUrlToSmart(root);
+
+        var restResource = new JsonArray();
+
+        // Precompute reverse-include targets once: for every resource type's Reference-typed search
+        // parameters, record "ResourceType:code" against each of its target resource types. Mirrors the
+        // old file's per-store `_supportedRevIncludes`, computed here instead since that concept no
+        // longer lives on ResourceStore (Task 6 centralized search parameter definitions).
+        var revIncludesByTarget = new Dictionary<string, List<string>>();
+        foreach (string otherType in _store.Keys)
+        {
+            if (!_search.Definitions.TryGetSearchParameters(otherType, out IEnumerable<SearchParameterInfo> otherParams))
+            {
+                continue;
+            }
+
+            foreach (SearchParameterInfo sp in otherParams.Where(p => p.Type == SearchParamType.Reference))
+            {
+                foreach (string target in sp.TargetResourceTypes)
+                {
+                    if (!revIncludesByTarget.TryGetValue(target, out List<string>? list))
+                    {
+                        list = [];
+                        revIncludesByTarget[target] = list;
+                    }
+
+                    list.Add($"{otherType}:{sp.Name}");
+                }
+            }
+        }
+
+        foreach (string resourceName in _store.Keys)
+        {
+            _search.Definitions.TryGetSearchParameters(resourceName, out IEnumerable<SearchParameterInfo> parameters);
+            List<SearchParameterInfo> paramList = (parameters ?? []).ToList();
+
+            var searchParamArray = new JsonArray();
+            foreach (SearchParameterInfo sp in paramList)
+            {
+                var spObj = new JsonObject
+                {
+                    ["name"] = sp.Name,
+                    ["type"] = sp.Type.ToString().ToLowerInvariant(),
+                };
+
+                if (sp.Url is not null)
+                {
+                    spObj["definition"] = sp.Url.ToString();
+                }
+
+                if (!string.IsNullOrEmpty(sp.Description))
+                {
+                    spObj["documentation"] = sp.Description;
+                }
+
+                searchParamArray.Add(spObj);
+            }
+
+            List<string> searchIncludes = paramList
+                .Where(p => p.Type == SearchParamType.Reference)
+                .Select(p => $"{resourceName}:{p.Name}")
+                .Order(StringComparer.Ordinal)
+                .ToList();
+
+            List<string> searchRevIncludes = revIncludesByTarget.TryGetValue(resourceName, out List<string>? revList)
+                ? revList.Order(StringComparer.Ordinal).ToList()
+                : [];
+
+            var rc = new JsonObject
+            {
+                ["type"] = resourceName,
+                ["interaction"] = new JsonArray(
+                    Interaction("create"),
+                    Interaction("delete"),
+                    Interaction("read"),
+                    Interaction("search-type"),
+                    Interaction("update")),
+                ["versioning"] = "no-version",
+                ["updateCreate"] = true,
+                ["conditionalCreate"] = true,
+                ["conditionalRead"] = "full-support",
+                ["conditionalUpdate"] = true,
+                ["conditionalDelete"] = "not-supported",
+                ["referencePolicy"] = new JsonArray("literal", "logical", "local"),
+                ["searchInclude"] = new JsonArray([.. searchIncludes.Select(s => (JsonNode)s)]),
+                ["searchRevInclude"] = new JsonArray([.. searchRevIncludes.Select(s => (JsonNode)s)]),
+                ["searchParam"] = searchParamArray,
+            };
+
+            restResource.Add(rc);
+        }
+
+        var restComponent = new JsonObject
+        {
+            ["mode"] = "server",
+            ["interaction"] = new JsonArray(
+                Interaction("batch"),
+                Interaction("search-system"),
+                Interaction("transaction")),
+            ["resource"] = restResource,
+        };
+
+        if (_config.SmartRequired || _config.SmartAllowed)
+        {
+            string securityCodeSystemUrl = _config.FhirVersion switch
+            {
+                FhirReleases.FhirSequenceCodes.R4 => "http://terminology.hl7.org/CodeSystem/restful-security-service",
+                FhirReleases.FhirSequenceCodes.R4B => "http://terminology.hl7.org/CodeSystem/restful-security-service",
+                FhirReleases.FhirSequenceCodes.R5 => "http://hl7.org/fhir/restful-security-service",
+                _ => "http://hl7.org/fhir/restful-security-service",
+            };
+
+            restComponent["security"] = new JsonObject
+            {
+                ["cors"] = true,
+                ["service"] = new JsonArray(new JsonObject
+                {
+                    ["coding"] = new JsonArray(new JsonObject
+                    {
+                        ["system"] = securityCodeSystemUrl,
+                        ["code"] = "SMART-on-FHIR",
+                    }),
+                }),
+                ["extension"] = new JsonArray(new JsonObject
+                {
+                    ["url"] = "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris",
+                    ["extension"] = new JsonArray(
+                        new JsonObject { ["url"] = "token", ["valueUri"] = $"{smartRoot}/token" },
+                        new JsonObject { ["url"] = "authorize", ["valueUri"] = $"{smartRoot}/authorize" },
+                        new JsonObject { ["url"] = "register", ["valueUri"] = $"{smartRoot}/register" },
+                        new JsonObject { ["url"] = "manage", ["valueUri"] = $"{smartRoot}/clients" }),
+                }),
+            };
+        }
+
+        var cs = new JsonObject
+        {
+            ["resourceType"] = "CapabilityStatement",
+            ["id"] = _capabilityStatementId,
+            ["url"] = $"{root}/CapabilityStatement/{_capabilityStatementId}",
+            ["name"] = "Capabilities" + _config.FhirVersion,
+            ["status"] = "active",
+            ["date"] = DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"),
+            ["kind"] = "instance",
+            ["software"] = new JsonObject
+            {
+                ["name"] = "fhir-candle",
+                ["version"] = GetType().Assembly.GetName().Version?.ToString() ?? "0.0.0.0",
+            },
+            ["implementation"] = new JsonObject
+            {
+                ["description"] = "fhir-candle: A FHIR Server for testing and development",
+                ["url"] = "https://github.com/FHIR/fhir-candle",
+            },
+            ["fhirVersion"] = _schema.FullVersion,
+            ["format"] = new JsonArray([.. _config.SupportedFormats.Select(f => (JsonNode)f)]),
+            ["rest"] = new JsonArray(restComponent),
+        };
+
+        ResourceJsonNode resource = JsonSourceNodeFactory.Parse((JsonNode)cs);
+
+        if (root == _config.BaseUrl)
+        {
+            _cachedCapabilityStatement = resource;
+            _capabilitiesAreStale = false;
+        }
+
+        return resource;
+
+        static JsonObject Interaction(string code) => new() { ["code"] = code };
+    }
+
+    /// <summary>Rewrites a FHIR base URL to the corresponding SMART discovery root
+    /// (<c>.../fhir/{tenant}</c> to <c>.../_smart/{tenant}</c>).</summary>
+    private static string FhirUrlToSmart(string url)
+    {
+        if (url.Contains("/fhir/", StringComparison.Ordinal))
+        {
+            return url.Replace("/fhir/", "/_smart/");
+        }
+
+        if (url.EndsWith("/fhir", StringComparison.Ordinal))
+        {
+            return url[..^5] + "/_smart";
+        }
+
+        return url.EndsWith('/') ? url + "_smart" : url + "/_smart";
     }
 
     /// <summary>Not yet implemented in this task.</summary>
