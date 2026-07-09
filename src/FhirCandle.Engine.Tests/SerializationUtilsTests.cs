@@ -1,5 +1,7 @@
 using System.Net;
 using FhirCandle.Serialization;
+using FhirCandle.Strict;
+using FhirCandle.Utils;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Shouldly;
@@ -50,5 +52,62 @@ public class SerializationUtilsTests
         SerializationUtils.SerializeFhir(r!, schema, "application/fhir+json", pretty: false)
             .ShouldBe("""{"resourceType":"Patient","id":"p1"}""");
         SerializationUtils.SerializeFhir(r!, schema, "json", pretty: true).ShouldContain("\n");
+    }
+
+    [Fact]
+    public void BuildOutcomeForStrictRule_WithSpecUrl_IncludesUrlInDiagnostics()
+    {
+        var oo = SerializationUtils.BuildOutcomeForStrictRule(
+            HttpStatusCode.BadRequest,
+            "Unknown parameter",
+            StrictRuleCode.SearchUnknownParameter,
+            FhirReleases.FhirSequenceCodes.R4,
+            OperationOutcomeJsonNode.IssueType.Invalid);
+
+        oo.ResourceType.ShouldBe("OperationOutcome");
+        oo.Issue.Count.ShouldBe(1);
+        oo.Issue[0].Severity.ShouldBe(OperationOutcomeJsonNode.IssueSeverity.Error);
+        oo.Issue[0].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.Invalid);
+        oo.Issue[0].Diagnostics.ShouldContain("Unknown parameter");
+        oo.Issue[0].Diagnostics.ShouldContain("http://hl7.org/fhir/R4/search.html");
+    }
+
+    [Fact]
+    public void BuildOutcomeForStrictRules_MultipleIssues_CreatesSeparateIssueComponents()
+    {
+        var issues = new[]
+        {
+            (StrictRuleCode.SearchUnknownParameter, "Unknown parameter: status", OperationOutcomeJsonNode.IssueType.Invalid),
+            (StrictRuleCode.SearchMalformedParameter, "Malformed date value", OperationOutcomeJsonNode.IssueType.Value),
+        };
+
+        var oo = SerializationUtils.BuildOutcomeForStrictRules(
+            HttpStatusCode.BadRequest,
+            issues,
+            FhirReleases.FhirSequenceCodes.R4);
+
+        oo.ResourceType.ShouldBe("OperationOutcome");
+        oo.Issue.Count.ShouldBe(2);
+        oo.Issue[0].Severity.ShouldBe(OperationOutcomeJsonNode.IssueSeverity.Error);
+        oo.Issue[0].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.Invalid);
+        oo.Issue[0].Diagnostics.ShouldContain("Unknown parameter");
+        oo.Issue[1].Severity.ShouldBe(OperationOutcomeJsonNode.IssueSeverity.Error);
+        oo.Issue[1].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.Value);
+        oo.Issue[1].Diagnostics.ShouldContain("Malformed date");
+    }
+
+    [Fact]
+    public void BuildOutcomeForStrictRules_EmptyIssues_FallsBackToBuildOutcomeForRequest()
+    {
+        var issues = new List<(StrictRuleCode, string, OperationOutcomeJsonNode.IssueType)>();
+
+        var oo = SerializationUtils.BuildOutcomeForStrictRules(
+            HttpStatusCode.InternalServerError,
+            issues,
+            FhirReleases.FhirSequenceCodes.R4);
+
+        oo.ResourceType.ShouldBe("OperationOutcome");
+        oo.Issue.Count.ShouldBe(1);
+        oo.Issue[0].Diagnostics.ShouldContain("HTTP 500");
     }
 }
