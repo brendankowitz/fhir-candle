@@ -176,7 +176,7 @@ public sealed class VersionedFhirStore : IFhirStore
             }
         }
 
-        LoadOperations();
+        RegisterEligibleOperations();
 
         if (config.LoadDirectory is not null)
         {
@@ -192,23 +192,40 @@ public sealed class VersionedFhirStore : IFhirStore
         _maxResourceCount = config.MaxResourceCount;
     }
 
-    /// <summary>Discovers every <see cref="IFhirOperation"/> implementation in this assembly and
-    /// registers those applicable to this store's FHIR version, keyed by <see
-    /// cref="IFhirOperation.OperationName"/>. Mirrors the old (Firely-based) file's
-    /// <c>CheckLoadedOperations</c> reflection scan; unlike that file, this port does not self-register
-    /// each operation's <see cref="IFhirOperation.GetDefinition"/> result as a stored OperationDefinition
-    /// resource - nothing in this engine's CapabilityStatement generation consumes stored
-    /// OperationDefinitions yet, so doing so would have no observable effect. Revisit if a future task
-    /// wires OperationDefinition discovery into the CapabilityStatement.</summary>
-    private void LoadOperations()
-    {
-        IEnumerable<Type> operationTypes = System.Reflection.Assembly.GetExecutingAssembly().GetTypes()
-            .Where(t => !t.IsInterface && !t.IsAbstract && typeof(IFhirOperation).IsAssignableFrom(t));
+    /// <summary>Every <see cref="IFhirOperation"/> implementation in this assembly. Mirrors the old
+    /// (Firely-based) file's <c>CheckLoadedOperations</c> reflection scan, but as an explicit list:
+    /// there are exactly 8 known, sealed, same-assembly operations and no plugin story, so reflection
+    /// buys nothing here - it is also trimming/AOT-hostile, and a constructor-throws failure would
+    /// surface as a runtime reflection stack trace at store construction instead of a compile error.</summary>
+    private static readonly IFhirOperation[] _knownOperations =
+    [
+        new OpValidate(),
+        new OpConvert(),
+        new OpResetStore(),
+        new OpTestIfFhir(),
+        new OpFeatureQuery(),
+        new OpSubscriptionHook(),
+        new OpSubscriptionEvents(),
+        new OpSubscriptionStatus(),
+    ];
 
-        foreach (Type opType in operationTypes)
+    /// <summary>(Re-)registers every <see cref="_knownOperations"/> entry applicable to this store's FHIR
+    /// version into <see cref="_operations"/>, keyed by <see cref="IFhirOperation.OperationName"/>.
+    /// Idempotent and safe to call more than once: re-checking an already-registered operation's
+    /// eligibility and re-adding it to the dictionary is a no-op. Called once from <see cref="Init"/> and
+    /// again at the end of <see cref="LoadPackage"/>, because an operation's <see
+    /// cref="IFhirOperation.RequiresPackage"/> gate only becomes satisfiable once a package has loaded -
+    /// registering only in <see cref="Init"/> would leave any future <c>RequiresPackage</c>-gated
+    /// operation permanently unregistered no matter what packages load afterward. This port does not
+    /// self-register each operation's <see cref="IFhirOperation.GetDefinition"/> result as a stored
+    /// OperationDefinition resource - nothing in this engine's CapabilityStatement generation consumes
+    /// stored OperationDefinitions yet, so doing so would have no observable effect. Revisit if a future
+    /// task wires OperationDefinition discovery into the CapabilityStatement.</summary>
+    private void RegisterEligibleOperations()
+    {
+        foreach (IFhirOperation fhirOp in _knownOperations)
         {
-            if (Activator.CreateInstance(opType) is not IFhirOperation fhirOp ||
-                !fhirOp.CanonicalByFhirVersion.ContainsKey(_config.FhirVersion))
+            if (!fhirOp.CanonicalByFhirVersion.ContainsKey(_config.FhirVersion))
             {
                 continue;
             }
@@ -220,7 +237,7 @@ public sealed class VersionedFhirStore : IFhirStore
                 continue;
             }
 
-            _operations.TryAdd(fhirOp.OperationName, fhirOp);
+            _operations[fhirOp.OperationName] = fhirOp;
         }
     }
 
@@ -290,6 +307,8 @@ public sealed class VersionedFhirStore : IFhirStore
                 TryLoadAndStoreResourceFile(file);
             }
         }
+
+        RegisterEligibleOperations();
     }
 
     /// <summary>Parses a single resource file and stores it (update-as-create), honoring
@@ -1897,28 +1916,8 @@ public sealed class VersionedFhirStore : IFhirStore
 
     private bool DoSystemOperation(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        if (!_operations.TryGetValue(ctx.OperationName, out IFhirOperation? op))
+        if (!TryGetOperationForLevel(ctx.OperationName, op => op.AllowSystemLevel, "system-level", out IFhirOperation? op, out response))
         {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.NotFound,
-                    $"Operation {ctx.OperationName} does not have an executable implementation on this server."),
-                StatusCode = HttpStatusCode.NotFound,
-            };
-            return false;
-        }
-
-        if (!op.AllowSystemLevel)
-        {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.UnprocessableEntity,
-                    $"Operation {ctx.OperationName} does not allow system-level execution.",
-                    OperationOutcomeJsonNode.IssueType.NotSupported),
-                StatusCode = HttpStatusCode.UnprocessableEntity,
-            };
             return false;
         }
 
@@ -1928,17 +1927,7 @@ public sealed class VersionedFhirStore : IFhirStore
         }
 
         bool success = op.DoOperation(ctx, this, null, null, body, out FhirResponseContext opResponse);
-
-        response = new()
-        {
-            Resource = opResponse.Resource,
-            ResourceType = opResponse.ResourceType,
-            Id = opResponse.Id,
-            Outcome = opResponse.Outcome ?? SerializationUtils.BuildOutcomeForRequest(
-                opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
-                $"System-Level Operation {ctx.OperationName} {(success ? "succeeded" : "failed")}"),
-            StatusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
-        };
+        response = BuildOperationResponse(opResponse, success, $"System-Level Operation {ctx.OperationName}");
         return success;
     }
 
@@ -1965,41 +1954,13 @@ public sealed class VersionedFhirStore : IFhirStore
             return false;
         }
 
-        if (!_operations.TryGetValue(ctx.OperationName, out IFhirOperation? op))
+        if (!TryGetOperationForLevel(ctx.OperationName, op => op.AllowResourceLevel, "type-level", out IFhirOperation? op, out response))
         {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.NotFound,
-                    $"Operation {ctx.OperationName} does not have an executable implementation on this server."),
-                StatusCode = HttpStatusCode.NotFound,
-            };
             return false;
         }
 
-        if (!op.AllowResourceLevel)
+        if (!TryCheckSupportedResource(op, ctx.ResourceType, out response))
         {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.UnprocessableEntity,
-                    $"Operation {ctx.OperationName} does not allow type-level execution.",
-                    OperationOutcomeJsonNode.IssueType.NotSupported),
-                StatusCode = HttpStatusCode.UnprocessableEntity,
-            };
-            return false;
-        }
-
-        if (op.SupportedResources.Count > 0 && !op.SupportedResources.Contains(ctx.ResourceType))
-        {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.UnprocessableEntity,
-                    $"Operation {ctx.OperationName} is not defined for resource: {ctx.ResourceType}.",
-                    OperationOutcomeJsonNode.IssueType.NotSupported),
-                StatusCode = HttpStatusCode.UnprocessableEntity,
-            };
             return false;
         }
 
@@ -2009,17 +1970,7 @@ public sealed class VersionedFhirStore : IFhirStore
         }
 
         bool success = op.DoOperation(ctx, this, rs, null, body, out FhirResponseContext opResponse);
-
-        response = new()
-        {
-            Resource = opResponse.Resource,
-            ResourceType = opResponse.ResourceType,
-            Id = opResponse.Id,
-            Outcome = opResponse.Outcome ?? SerializationUtils.BuildOutcomeForRequest(
-                opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
-                $"Type-Level Operation {ctx.ResourceType}/{ctx.OperationName} {(success ? "succeeded" : "failed")}"),
-            StatusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
-        };
+        response = BuildOperationResponse(opResponse, success, $"Type-Level Operation {ctx.ResourceType}/{ctx.OperationName}");
         return success;
     }
 
@@ -2060,41 +2011,13 @@ public sealed class VersionedFhirStore : IFhirStore
             return false;
         }
 
-        if (!_operations.TryGetValue(ctx.OperationName, out IFhirOperation? op))
+        if (!TryGetOperationForLevel(ctx.OperationName, op => op.AllowInstanceLevel, "instance-level", out IFhirOperation? op, out response))
         {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.NotFound,
-                    $"Operation {ctx.OperationName} does not have an executable implementation on this server."),
-                StatusCode = HttpStatusCode.NotFound,
-            };
             return false;
         }
 
-        if (!op.AllowInstanceLevel)
+        if (!TryCheckSupportedResource(op, ctx.ResourceType, out response))
         {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.UnprocessableEntity,
-                    $"Operation {ctx.OperationName} does not allow instance-level execution.",
-                    OperationOutcomeJsonNode.IssueType.NotSupported),
-                StatusCode = HttpStatusCode.UnprocessableEntity,
-            };
-            return false;
-        }
-
-        if (op.SupportedResources.Count > 0 && !op.SupportedResources.Contains(ctx.ResourceType))
-        {
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForRequest(
-                    HttpStatusCode.UnprocessableEntity,
-                    $"Operation {ctx.OperationName} is not defined for resource: {ctx.ResourceType}.",
-                    OperationOutcomeJsonNode.IssueType.NotSupported),
-                StatusCode = HttpStatusCode.UnprocessableEntity,
-            };
             return false;
         }
 
@@ -2104,18 +2027,94 @@ public sealed class VersionedFhirStore : IFhirStore
         }
 
         bool success = op.DoOperation(ctx, this, rs, focus, body, out FhirResponseContext opResponse);
+        response = BuildOperationResponse(opResponse, success, $"Instance-Level Operation {ctx.ResourceType}/{ctx.Id}/{ctx.OperationName}");
+        return success;
+    }
 
-        response = new()
+    /// <summary>Looks up <paramref name="operationName"/> in <see cref="_operations"/> and checks
+    /// <paramref name="levelAllowed"/> against it, building the shared NotFound/UnprocessableEntity
+    /// <see cref="FhirResponseContext"/> for either failure. Shared by <see cref="DoSystemOperation"/>,
+    /// <see cref="DoTypeOperation"/>, and <see cref="DoInstanceOperation"/>, which otherwise differ only
+    /// in which <see cref="IFhirOperation"/> level flag they check and what to call it in the error
+    /// message.</summary>
+    private bool TryGetOperationForLevel(
+        string operationName,
+        Func<IFhirOperation, bool> levelAllowed,
+        string levelDescription,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out IFhirOperation? op,
+        out FhirResponseContext response)
+    {
+        if (!_operations.TryGetValue(operationName, out op))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Operation {operationName} does not have an executable implementation on this server."),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!levelAllowed(op))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {operationName} does not allow {levelDescription} execution.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            op = null;
+            return false;
+        }
+
+        response = new();
+        return true;
+    }
+
+    /// <summary>Checks <paramref name="op"/>'s <see cref="IFhirOperation.SupportedResources"/> against
+    /// <paramref name="resourceType"/>, building the shared UnprocessableEntity response on mismatch.
+    /// Shared by <see cref="DoTypeOperation"/> and <see cref="DoInstanceOperation"/> (system-level
+    /// operations have no resource type to check against).</summary>
+    private static bool TryCheckSupportedResource(IFhirOperation op, string resourceType, out FhirResponseContext response)
+    {
+        if (op.SupportedResources.Count > 0 && !op.SupportedResources.Contains(resourceType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {op.OperationName} is not defined for resource: {resourceType}.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            return false;
+        }
+
+        response = new();
+        return true;
+    }
+
+    /// <summary>Projects an operation's own <paramref name="opResponse"/> into the final <see
+    /// cref="FhirResponseContext"/>, applying the <c>StatusCode ?? (success ? OK : InternalServerError)</c>
+    /// defaulting exactly once instead of once per dispatch level. Shared by <see
+    /// cref="DoSystemOperation"/>, <see cref="DoTypeOperation"/>, and <see cref="DoInstanceOperation"/>.</summary>
+    private static FhirResponseContext BuildOperationResponse(FhirResponseContext opResponse, bool success, string label)
+    {
+        HttpStatusCode statusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError);
+
+        return new()
         {
             Resource = opResponse.Resource,
             ResourceType = opResponse.ResourceType,
             Id = opResponse.Id,
             Outcome = opResponse.Outcome ?? SerializationUtils.BuildOutcomeForRequest(
-                opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
-                $"Instance-Level Operation {ctx.ResourceType}/{ctx.Id}/{ctx.OperationName} {(success ? "succeeded" : "failed")}"),
-            StatusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+                statusCode,
+                $"{label} {(success ? "succeeded" : "failed")}"),
+            StatusCode = statusCode,
         };
-        return success;
     }
 
     /// <summary>Resolves the body content for an operation dispatch. Unlike <see
