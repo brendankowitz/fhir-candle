@@ -48,17 +48,10 @@ public sealed class VersionedFhirStore : IFhirStore
     private readonly HashSet<string> _loadedSupplements = [];
     private readonly ConcurrentQueue<string> _resourceQ = [];
 
-    /// <summary>
-    /// Always-false ValueSet membership stub threaded through every <see cref="ResourceStore"/>'s
-    /// <c>:in</c>/<c>:not-in</c> search modifier support. Task 12 will replace this field (and add a
-    /// real <c>Terminology</c> property backed by <c>StoreTerminologyService</c>) once that service
-    /// exists; until then, ValueSet-membership search modifiers always report "no match".
-    /// </summary>
-    private readonly Func<string?, string?, string?, bool> _vsContains = (_, _, _) => false;
-
     private TenantConfiguration _config = null!;
     private IFhirSchemaProvider _schema = null!;
     private CandleSearchService _search = null!;
+    private StoreTerminologyService _terminology = null!;
     private int _maxResourceCount;
     private bool _hasDisposed;
 
@@ -99,6 +92,10 @@ public sealed class VersionedFhirStore : IFhirStore
 
     /// <summary>Gets the search service shared by every per-resource-type store.</summary>
     public CandleSearchService Search => _search;
+
+    /// <summary>Gets the terminology service backing every per-resource-type store's <c>:in</c>/
+    /// <c>:not-in</c> search modifier support.</summary>
+    public StoreTerminologyService Terminology => _terminology;
 
     /// <inheritdoc/>
     public TenantConfiguration Config => _config;
@@ -142,6 +139,7 @@ public sealed class VersionedFhirStore : IFhirStore
         _config = config;
         _schema = FhirSchemas.Get(config.FhirVersion);
         _search = new CandleSearchService(_schema, NullLoggerFactory.Instance);
+        _terminology = new StoreTerminologyService(_schema);
 
         foreach (string resourceType in _schema.ResourceTypeNames)
         {
@@ -153,7 +151,7 @@ public sealed class VersionedFhirStore : IFhirStore
                     continue;
             }
 
-            var rs = new ResourceStore(resourceType, _schema, _search, _vsContains);
+            var rs = new ResourceStore(resourceType, _schema, _search, _terminology.VsContains);
 
             rs.OnInstanceCreated += (_, e) => RegisterInstanceCreated(e.ResourceType, e.ResourceId);
             rs.OnInstanceUpdated += (_, e) => RegisterInstanceUpdated(e.ResourceType, e.ResourceId);
@@ -162,11 +160,8 @@ public sealed class VersionedFhirStore : IFhirStore
             rs.OnCompartmentDefinitionChanged += (_, resource) => RegisterCompartmentDefinition(resource);
             rs.OnCompartmentDefinitionRemoved += (_, code) => RemoveCompartmentDefinition(code);
 
-            // Deferred: no terminology service (Task 12) exists yet to register these against.
-            // Subscribing here (rather than leaving the events unobserved) documents the exact
-            // extension point that task should use.
-            rs.OnValueSetChanged += (_, _) => { };
-            rs.OnValueSetRemoved += (_, _) => { };
+            rs.OnValueSetChanged += (_, resource) => _terminology.StoreProcessValueSet(resource.ToElement(_schema));
+            rs.OnValueSetRemoved += (_, resource) => _terminology.StoreProcessValueSet(resource.ToElement(_schema), remove: true);
 
             _store.Add(resourceType, rs);
         }
