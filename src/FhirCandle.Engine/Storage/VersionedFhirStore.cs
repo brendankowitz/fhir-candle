@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Web;
 using FhirCandle.Compartments;
 using FhirCandle.Models;
+using FhirCandle.Operations;
 using FhirCandle.Schema;
 using FhirCandle.Search;
 using FhirCandle.Serialization;
@@ -42,6 +43,7 @@ public sealed class VersionedFhirStore : IFhirStore
 
     private readonly Dictionary<string, ResourceStore> _store = [];
     private readonly Dictionary<string, ParsedCompartment> _compartments = [];
+    private readonly Dictionary<string, IFhirOperation> _operations = [];
     private readonly HashSet<string> _protectedResources = [];
     private readonly HashSet<string> _loadedDirectives = [];
     private readonly HashSet<string> _loadedPackageIds = [];
@@ -174,6 +176,8 @@ public sealed class VersionedFhirStore : IFhirStore
             }
         }
 
+        LoadOperations();
+
         if (config.LoadDirectory is not null)
         {
             foreach (FileInfo file in config.LoadDirectory.GetFiles("*.*", SearchOption.AllDirectories))
@@ -186,6 +190,59 @@ public sealed class VersionedFhirStore : IFhirStore
         }
 
         _maxResourceCount = config.MaxResourceCount;
+    }
+
+    /// <summary>Discovers every <see cref="IFhirOperation"/> implementation in this assembly and
+    /// registers those applicable to this store's FHIR version, keyed by <see
+    /// cref="IFhirOperation.OperationName"/>. Mirrors the old (Firely-based) file's
+    /// <c>CheckLoadedOperations</c> reflection scan; unlike that file, this port does not self-register
+    /// each operation's <see cref="IFhirOperation.GetDefinition"/> result as a stored OperationDefinition
+    /// resource - nothing in this engine's CapabilityStatement generation consumes stored
+    /// OperationDefinitions yet, so doing so would have no observable effect. Revisit if a future task
+    /// wires OperationDefinition discovery into the CapabilityStatement.</summary>
+    private void LoadOperations()
+    {
+        IEnumerable<Type> operationTypes = System.Reflection.Assembly.GetExecutingAssembly().GetTypes()
+            .Where(t => !t.IsInterface && !t.IsAbstract && typeof(IFhirOperation).IsAssignableFrom(t));
+
+        foreach (Type opType in operationTypes)
+        {
+            if (Activator.CreateInstance(opType) is not IFhirOperation fhirOp ||
+                !fhirOp.CanonicalByFhirVersion.ContainsKey(_config.FhirVersion))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(fhirOp.RequiresPackage) &&
+                !_loadedDirectives.Contains(fhirOp.RequiresPackage) &&
+                !_loadedPackageIds.Contains(fhirOp.RequiresPackage))
+            {
+                continue;
+            }
+
+            _operations.TryAdd(fhirOp.OperationName, fhirOp);
+        }
+    }
+
+    /// <summary>Deletes every non-protected resource; when <paramref name="keepConformance"/> is true,
+    /// resources of a conformance-bearing type (<see cref="ResourceStore.ResourcesAreConformance"/>,
+    /// e.g. StructureDefinition, SearchParameter) are preserved. Semantics match the old (Firely-based)
+    /// port's <c>$reset-store</c> introduced in commit f4675d0. Protected-resource filtering is handled
+    /// by <see cref="ResourceStore.InstanceDelete"/> itself.</summary>
+    public void ResetStore(bool keepConformance)
+    {
+        foreach (ResourceStore rs in _store.Values)
+        {
+            if (keepConformance && rs.ResourcesAreConformance)
+            {
+                continue;
+            }
+
+            foreach (string id in rs.Keys.ToList())
+            {
+                _ = rs.InstanceDelete(id, _protectedResources);
+            }
+        }
     }
 
     /// <inheritdoc/>
@@ -353,6 +410,15 @@ public sealed class VersionedFhirStore : IFhirStore
 
             case Common.StoreInteractionCodes.SystemBundle:
                 return ProcessBundle(ctx, out response);
+
+            case Common.StoreInteractionCodes.SystemOperation:
+                return SystemOperation(ctx, out response);
+
+            case Common.StoreInteractionCodes.TypeOperation:
+                return TypeOperation(ctx, out response);
+
+            case Common.StoreInteractionCodes.InstanceOperation:
+                return InstanceOperation(ctx, out response);
 
             default:
                 response = NotImplementedResponse($"Interaction not implemented: {ctx.Interaction}");
@@ -1821,24 +1887,287 @@ public sealed class VersionedFhirStore : IFhirStore
         return false;
     }
 
-    /// <summary>Not yet implemented - the Operations subsystem has not been ported.</summary>
+    /// <inheritdoc/>
     public bool SystemOperation(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("SystemOperation is not yet implemented.");
-        return false;
+        bool success = DoSystemOperation(ctx, out FhirResponseContext resp);
+        response = SerializeResponse(ctx, resp);
+        return success;
     }
 
-    /// <summary>Not yet implemented - the Operations subsystem has not been ported.</summary>
+    private bool DoSystemOperation(FhirRequestContext ctx, out FhirResponseContext response)
+    {
+        if (!_operations.TryGetValue(ctx.OperationName, out IFhirOperation? op))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Operation {ctx.OperationName} does not have an executable implementation on this server."),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!op.AllowSystemLevel)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {ctx.OperationName} does not allow system-level execution.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            return false;
+        }
+
+        if (!TryDeserializeOperationBody(ctx, op, out ResourceJsonNode? body, out response))
+        {
+            return false;
+        }
+
+        bool success = op.DoOperation(ctx, this, null, null, body, out FhirResponseContext opResponse);
+
+        response = new()
+        {
+            Resource = opResponse.Resource,
+            ResourceType = opResponse.ResourceType,
+            Id = opResponse.Id,
+            Outcome = opResponse.Outcome ?? SerializationUtils.BuildOutcomeForRequest(
+                opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+                $"System-Level Operation {ctx.OperationName} {(success ? "succeeded" : "failed")}"),
+            StatusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+        };
+        return success;
+    }
+
+    /// <inheritdoc/>
     public bool TypeOperation(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("TypeOperation is not yet implemented.");
-        return false;
+        bool success = DoTypeOperation(ctx, out FhirResponseContext resp);
+        response = SerializeResponse(ctx, resp);
+        return success;
     }
 
-    /// <summary>Not yet implemented - the Operations subsystem has not been ported.</summary>
+    private bool DoTypeOperation(FhirRequestContext ctx, out FhirResponseContext response)
+    {
+        if (!_store.TryGetValue(ctx.ResourceType, out ResourceStore? rs))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Resource type {ctx.ResourceType} does not exist on this server.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!_operations.TryGetValue(ctx.OperationName, out IFhirOperation? op))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Operation {ctx.OperationName} does not have an executable implementation on this server."),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!op.AllowResourceLevel)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {ctx.OperationName} does not allow type-level execution.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            return false;
+        }
+
+        if (op.SupportedResources.Count > 0 && !op.SupportedResources.Contains(ctx.ResourceType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {ctx.OperationName} is not defined for resource: {ctx.ResourceType}.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            return false;
+        }
+
+        if (!TryDeserializeOperationBody(ctx, op, out ResourceJsonNode? body, out response))
+        {
+            return false;
+        }
+
+        bool success = op.DoOperation(ctx, this, rs, null, body, out FhirResponseContext opResponse);
+
+        response = new()
+        {
+            Resource = opResponse.Resource,
+            ResourceType = opResponse.ResourceType,
+            Id = opResponse.Id,
+            Outcome = opResponse.Outcome ?? SerializationUtils.BuildOutcomeForRequest(
+                opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+                $"Type-Level Operation {ctx.ResourceType}/{ctx.OperationName} {(success ? "succeeded" : "failed")}"),
+            StatusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+        };
+        return success;
+    }
+
+    /// <inheritdoc/>
     public bool InstanceOperation(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("InstanceOperation is not yet implemented.");
+        bool success = DoInstanceOperation(ctx, out FhirResponseContext resp);
+        response = SerializeResponse(ctx, resp);
+        return success;
+    }
+
+    private bool DoInstanceOperation(FhirRequestContext ctx, out FhirResponseContext response)
+    {
+        if (!_store.TryGetValue(ctx.ResourceType, out ResourceStore? rs))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Resource type {ctx.ResourceType} does not exist on this server.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        ResourceJsonNode? focus = string.IsNullOrEmpty(ctx.Id) ? null : rs.InstanceRead(ctx.Id);
+
+        if (focus is null)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Instance {ctx.ResourceType}/{ctx.Id} does not exist on this server."),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!_operations.TryGetValue(ctx.OperationName, out IFhirOperation? op))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.NotFound,
+                    $"Operation {ctx.OperationName} does not have an executable implementation on this server."),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (!op.AllowInstanceLevel)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {ctx.OperationName} does not allow instance-level execution.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            return false;
+        }
+
+        if (op.SupportedResources.Count > 0 && !op.SupportedResources.Contains(ctx.ResourceType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(
+                    HttpStatusCode.UnprocessableEntity,
+                    $"Operation {ctx.OperationName} is not defined for resource: {ctx.ResourceType}.",
+                    OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+            };
+            return false;
+        }
+
+        if (!TryDeserializeOperationBody(ctx, op, out ResourceJsonNode? body, out response))
+        {
+            return false;
+        }
+
+        bool success = op.DoOperation(ctx, this, rs, focus, body, out FhirResponseContext opResponse);
+
+        response = new()
+        {
+            Resource = opResponse.Resource,
+            ResourceType = opResponse.ResourceType,
+            Id = opResponse.Id,
+            Outcome = opResponse.Outcome ?? SerializationUtils.BuildOutcomeForRequest(
+                opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+                $"Instance-Level Operation {ctx.ResourceType}/{ctx.Id}/{ctx.OperationName} {(success ? "succeeded" : "failed")}"),
+            StatusCode = opResponse.StatusCode ?? (success ? HttpStatusCode.OK : HttpStatusCode.InternalServerError),
+        };
+        return success;
+    }
+
+    /// <summary>Resolves the body content for an operation dispatch. Unlike <see
+    /// cref="TryDeserializeSource"/>, an empty body is not an error here - many operations (GET
+    /// requests, no-arg POSTs like <c>$reset-store</c>) have none. When content is present but not
+    /// parseable as FHIR, the operation's <see cref="IFhirOperation.AcceptsNonFhir"/> flag decides
+    /// whether that is tolerated.</summary>
+    private bool TryDeserializeOperationBody(
+        FhirRequestContext ctx,
+        IFhirOperation op,
+        out ResourceJsonNode? body,
+        out FhirResponseContext response)
+    {
+        if (ctx.SourceObject is ResourceJsonNode direct)
+        {
+            body = direct;
+            response = new();
+            return true;
+        }
+
+        if (string.IsNullOrEmpty(ctx.SourceContent))
+        {
+            body = null;
+            response = new();
+            return true;
+        }
+
+        HttpStatusCode sc = SerializationUtils.TryDeserializeFhir(ctx.SourceContent, ctx.SourceFormat, out body, out string exMessage, _schema);
+
+        if (sc == HttpStatusCode.OK && body is not null)
+        {
+            response = new();
+            return true;
+        }
+
+        if (op.AcceptsNonFhir)
+        {
+            body = null;
+            response = new();
+            return true;
+        }
+
+        response = new()
+        {
+            Outcome = SerializationUtils.BuildOutcomeForRequest(
+                HttpStatusCode.UnsupportedMediaType,
+                string.IsNullOrEmpty(exMessage)
+                    ? $"Operation {ctx.OperationName} does not consume non-FHIR content."
+                    : $"Operation {ctx.OperationName} does not consume non-FHIR content.\n\nError:\n{exMessage}",
+                OperationOutcomeJsonNode.IssueType.Invalid),
+            StatusCode = HttpStatusCode.UnsupportedMediaType,
+        };
         return false;
     }
 
