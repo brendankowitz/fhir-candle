@@ -11,7 +11,8 @@ namespace FhirCandle.Serialization;
 public static class SerializationUtils
 {
     public static HttpStatusCode TryDeserializeFhir(
-        string content, string format, out ResourceJsonNode? resource, out string exMessage)
+        string content, string format, out ResourceJsonNode? resource, out string exMessage,
+        IFhirSchemaProvider? schema = null)
     {
         exMessage = string.Empty;
         switch (SniffFormat(format, content))
@@ -26,8 +27,15 @@ public static class SerializationUtils
                 }
                 catch (Exception ex) { return Fail(out resource, out exMessage, ex.Message); }
             case "xml":
-                // wired in Task 3 (FhirXml.Parse); until then:
-                return Fail(out resource, out exMessage, "XML parsing not yet wired");
+                ArgumentNullException.ThrowIfNull(schema);
+                try
+                {
+                    resource = FhirXml.Parse(content, schema);
+                    return string.IsNullOrEmpty(resource.ResourceType)
+                        ? Fail(out resource, out exMessage, "Missing resourceType")
+                        : HttpStatusCode.OK;
+                }
+                catch (Exception ex) { return Fail(out resource, out exMessage, ex.Message); }
             default:
                 return Fail(out resource, out exMessage, $"Unsupported format: {format}");
         }
@@ -40,7 +48,7 @@ public static class SerializationUtils
         return SniffFormat(format, "{") switch
         {
             "json" => toSerialize.SerializeToString(pretty),
-            "xml" => throw new NotSupportedException("wired in Task 3"),
+            "xml" => FhirXml.Serialize(toSerialize, schema, pretty),
             _ => toSerialize.SerializeToString(pretty),
         };
     }
