@@ -31,10 +31,10 @@ namespace FhirCandle.Storage;
 /// A FHIR store spanning every resource type for a single tenant/FHIR-version combination.
 /// </summary>
 /// <remarks>
-/// This is the Ignixa-model port of the core CRUD/search/dispatch surface of the old (Firely-based)
-/// <c>VersionedFhirStore</c>. Subscription execution and terminology (ValueSet) services do not exist
-/// yet anywhere in the new engine and are deferred to future tasks - see the per-member remarks below
-/// for exact extension points.
+/// This is the Ignixa-model port of the old (Firely-based) <c>VersionedFhirStore</c>: the core
+/// CRUD/search/dispatch surface plus terminology (<see cref="StoreTerminologyService"/>), compartments
+/// (<see cref="ParsedCompartment"/>), operations, and subscription/topic execution
+/// (<see cref="FhirCandle.Subscriptions.TopicConverter"/>/<see cref="FhirCandle.Subscriptions.SubscriptionConverter"/>).
 /// </remarks>
 public sealed class VersionedFhirStore : IFhirStore
 {

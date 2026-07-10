@@ -139,12 +139,12 @@ public sealed class ResourceStore : IVersionedResourceStore
     /// <summary>Occurs when a subscription topic trigger fails to evaluate.</summary>
     public event EventHandler<SubscriptionTriggerErrorEventArgs>? OnSubscriptionTriggerError;
 
-    /// <summary>Validates Basic-wrapped SubscriptionTopic and SubscriptionTopic resources. Unset until a
-    /// later (Subscriptions) task wires in a real topic converter.</summary>
+    /// <summary>Validates Basic-wrapped SubscriptionTopic and SubscriptionTopic resources. Set by the
+    /// owning store to the topic converter's parse check.</summary>
     public SpecialResourceValidator? SubscriptionTopicValidator { get; set; }
 
-    /// <summary>Validates Subscription resources. Unset until a later (Subscriptions) task wires in a real
-    /// subscription converter.</summary>
+    /// <summary>Validates Subscription resources. Set by the owning store to the subscription
+    /// converter's parse check.</summary>
     public SpecialResourceValidator? SubscriptionValidator { get; set; }
 
     /// <summary>Initializes a new instance of the <see cref="ResourceStore"/> class.</summary>
