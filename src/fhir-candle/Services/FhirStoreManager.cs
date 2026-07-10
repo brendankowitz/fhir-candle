@@ -3,9 +3,7 @@
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
-extern alias candleR4;
-extern alias candleR4B;
-extern alias candleR5;
+extern alias engine;
 
 using System.Collections;
 using System.Linq;
@@ -176,20 +174,7 @@ public class FhirStoreManager : IFhirStoreManager, IDisposable
                 throw new Exception($"Duplicate controller names configured!: {config.ControllerName}");
             }
 
-            switch (config.FhirVersion)
-            {
-                case FhirReleases.FhirSequenceCodes.R4:
-                    _storesByController.Add(name, new candleR4::FhirCandle.Storage.VersionedFhirStore());
-                    break;
-
-                case FhirReleases.FhirSequenceCodes.R4B:
-                    _storesByController.Add(name, new candleR4B::FhirCandle.Storage.VersionedFhirStore());
-                    break;
-
-                case FhirReleases.FhirSequenceCodes.R5:
-                    _storesByController.Add(name, new candleR5::FhirCandle.Storage.VersionedFhirStore());
-                    break;
-            }
+            _storesByController.Add(name, new engine::FhirCandle.Storage.VersionedFhirStore());
 
             _storesByController[name].Init(config);
             //_storesByController[config.ControllerName].OnSubscriptionSendEvent += FhirStoreManager_OnSubscriptionSendEvent;

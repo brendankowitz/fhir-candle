@@ -67,11 +67,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="Services\FhirWebSerializer.cs" />
-    <Compile Remove="Services\IFhirWebSerializer.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.9" />
@@ -102,9 +97,7 @@
     <ProjectReference Include="..\FhirCandle.Ui.R4\FhirCandle.Ui.R4.csproj" />
     <ProjectReference Include="..\FhirCandle.Ui.R5\FhirCandle.Ui.R5.csproj" />
     <ProjectReference Include="..\FhirStore.Common\FhirCandle.Common.csproj" />
-    <ProjectReference Include="..\FhirStore.R4\FhirCandle.R4.csproj" />
-    <ProjectReference Include="..\FhirStore.R4B\FhirCandle.R4B.csproj" />
-    <ProjectReference Include="..\FhirStore.R5\FhirCandle.R5.csproj" />
+    <ProjectReference Include="..\FhirCandle.Engine\FhirCandle.Engine.csproj" Aliases="engine" />
   </ItemGroup>
 
   <ItemGroup>
@@ -138,30 +131,4 @@
     <Folder Include="Pages\Client\" />
   </ItemGroup>
 
-  <Target Name="AddPackageAliases" BeforeTargets="ResolveReferences" Outputs="%(PackageReference.Identity)">
-    <ItemGroup>
-      <ReferencePath Condition="'%(FileName)'=='FhirCandle.R4'">
-        <Aliases>candleR4</Aliases>
-      </ReferencePath>
-      <ReferencePath Condition="'%(FileName)'=='FhirCandle.R4B'">
-        <Aliases>candleR4B</Aliases>
-      </ReferencePath>
-      <ReferencePath Condition="'%(FileName)'=='FhirCandle.R5'">
-        <Aliases>candleR5</Aliases>
-      </ReferencePath>
-      <ReferencePath Condition="'%(FileName)'=='Hl7.Fhir.R4.Core'">
-        <Aliases>coreR4</Aliases>
-      </ReferencePath>
-      <ReferencePath Condition="'%(FileName)'=='Hl7.Fhir.R4B.Core'">
-        <Aliases>coreR4B</Aliases>
-      </ReferencePath>
-      <ReferencePath Condition="'%(FileName)'=='Hl7.Fhir.R5.Core'">
-        <Aliases>coreR5</Aliases>
-      </ReferencePath>
-    </ItemGroup>
-  </Target>
-  <!--<Target Name="AddPackageAliases" BeforeTargets="ResolveReferences" Outputs="%(PackageReference.Identity)">
-		<ItemGroup>
-		</ItemGroup>
-	</Target>-->
 </Project>

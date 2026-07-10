@@ -9,8 +9,6 @@ using FhirCandle.Models;
 using FhirCandle.Smart;
 using FhirCandle.Storage;
 using FhirStore.Smart;
-using Hl7.Fhir.Rest;
-using Hl7.Fhir.Utility;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Hosting;

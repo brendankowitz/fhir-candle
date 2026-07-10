@@ -10,7 +10,6 @@ using fhir.candle.Services;
 using Fhir.Metrics;
 using FhirCandle.Models;
 using FhirCandle.Storage;
-using Hl7.Fhir.Rest;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;

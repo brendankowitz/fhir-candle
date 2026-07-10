@@ -9,7 +9,6 @@ using fhir.candle.Models;
 using fhir.candle.Services;
 using FhirCandle.Models;
 using FhirCandle.Smart;
-using Hl7.Fhir.Rest;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 

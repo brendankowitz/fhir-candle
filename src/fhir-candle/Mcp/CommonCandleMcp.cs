@@ -1,5 +1,4 @@
 ﻿using System.Runtime.CompilerServices;
-using Hl7.Fhir.Model.CdsHooks;
 using ModelContextProtocol.Protocol;
 
 namespace fhir.candle.Mcp;
