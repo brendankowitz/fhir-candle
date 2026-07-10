@@ -17,6 +17,10 @@ While there are many existing OSS FHIR servers, somewhere between most and all o
 * House features that would not be appropriate in production
     * E.g., provide feedback on SMART tokens to help developers
 
+### Implementation Note: Ignixa FHIR SDK
+
+fhir-candle now runs on the [Ignixa FHIR SDK](https://github.com/brendankowitz/ignixa-fhir) instead of Firely's Hl7.Fhir.* packages, providing faster serialization and FHIRPath evaluation. Ignixa is described in its README as an "Advanced Research / Reference Implementation" and is not a supported production product — consistent with fhir-candle's own non-production status. There are two known limitations from this migration: FHIRPath's `memberOf()` function is not implemented by Ignixa's evaluator, and search modifiers `:above` and `:below` are not supported (the latter was already unimplemented in fhir-candle's pre-migration code).
+
 ## FHIR Foundation Project Statement
 * Maintainers: Gino Canessa
 * Issues / Discussion: Any issues should be submitted on [GitHub](https://github.com/FHIR/fhir-candle/issues). Discussion can be performed here on GitHub, or on the [dotnet stream on chat.fhir.org](https://chat.fhir.org/#narrow/stream/179171-dotnet).
@@ -60,7 +64,7 @@ The sections below are a quick-start; deeper detail lives in `docs/`.
 
 ## Get Started with .Net
 
-[Install .NET 8 or newer](https://get.dot.net) and run this command:
+[Install .NET 9 or newer](https://get.dot.net) and run this command:
 
 ```
 dotnet tool install --global fhir-candle

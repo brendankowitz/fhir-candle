@@ -13,8 +13,8 @@ using Ignixa.Serialization.SourceNodes;
 namespace FhirCandle.Operations;
 
 /// <summary>System-level <c>$reset-store</c> operation: deletes all non-protected resources (and,
-/// unless <c>keep-conformance</c> is set, conformance resources too). Semantics match the old
-/// (Firely-based) port introduced in commit f4675d0.</summary>
+/// unless <c>keep-conformance</c> is set, conformance resources too). Semantics match the previous
+/// port introduced in commit f4675d0.</summary>
 public sealed class OpResetStore : IFhirOperation
 {
     /// <inheritdoc/>

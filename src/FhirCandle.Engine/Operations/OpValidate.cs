@@ -19,7 +19,7 @@ namespace FhirCandle.Operations;
 /// <summary>
 /// <c>$validate</c> operation implementation, backed by Ignixa's profile-aware structural validator
 /// (<see cref="ProfileAwareValidationSchemaResolver"/> over <see cref="StructureDefinitionSchemaResolver"/>),
-/// replacing the old (Firely-based) port's POCO attribute validator.
+/// replacing the previous port's POCO attribute validator.
 /// </summary>
 public sealed class OpValidate : IFhirOperation
 {

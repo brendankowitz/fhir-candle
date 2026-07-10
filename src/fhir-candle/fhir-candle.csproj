@@ -97,7 +97,7 @@
     <ProjectReference Include="..\FhirCandle.Ui.R4\FhirCandle.Ui.R4.csproj" />
     <ProjectReference Include="..\FhirCandle.Ui.R5\FhirCandle.Ui.R5.csproj" />
     <ProjectReference Include="..\FhirStore.Common\FhirCandle.Common.csproj" />
-    <ProjectReference Include="..\FhirCandle.Engine\FhirCandle.Engine.csproj" Aliases="engine" />
+    <ProjectReference Include="..\FhirCandle.Engine\FhirCandle.Engine.csproj" />
   </ItemGroup>
 
   <ItemGroup>

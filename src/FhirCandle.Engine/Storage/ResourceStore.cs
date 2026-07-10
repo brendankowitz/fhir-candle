@@ -52,7 +52,7 @@ public sealed class SubscriptionTriggerErrorEventArgs : EventArgs
 /// A resource store for a single resource type, over <see cref="ResourceJsonNode"/>.
 /// </summary>
 /// <remarks>
-/// Unlike its Firely-era predecessor (<c>ResourceStore&lt;T&gt;</c>), this store does not hold a back-reference
+/// Unlike its earlier predecessor (<c>ResourceStore&lt;T&gt;</c>), this store does not hold a back-reference
 /// to its owning <c>VersionedFhirStore</c> (that type does not exist yet - it is built in a later task). Instead,
 /// it exposes the minimal concrete pieces its owner needs to wire up: the <see cref="OnInstanceCreated"/> /
 /// <see cref="OnInstanceUpdated"/> / <see cref="OnInstanceDeleted"/> events, and, for post-CRUD side effects

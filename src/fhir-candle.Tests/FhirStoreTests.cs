@@ -41,19 +41,19 @@ public class FhirStoreTests
     internal readonly TenantConfiguration _configR4;
 
     /// <summary>The FHIR store for FHIR R4.</summary>
-    internal IFhirStore _candleR4;
+    internal IFhirStore _storeR4;
 
     /// <summary>(Immutable) The configuration for FHIR R4B.</summary>
     internal readonly TenantConfiguration _configR4B;
 
     /// <summary>The FHIR store for FHIR R4B.</summary>
-    internal IFhirStore _candleR4B;
+    internal IFhirStore _storeR4B;
 
     /// <summary>(Immutable) The configuration for FHIR R5.</summary>
     internal readonly TenantConfiguration _configR5;
 
     /// <summary>The FHIR store for FHIR R5.</summary>
-    internal IFhirStore _candleR5;
+    internal IFhirStore _storeR5;
 
     /// <summary>The stores.</summary>
     internal Dictionary<FhirReleases.FhirSequenceCodes, IFhirStore> _stores = new();
@@ -99,17 +99,17 @@ public class FhirStoreTests
             AllowCreateAsUpdate = true,
         };
 
-        _candleR4 = new VersionedFhirStore();
-        _candleR4.Init(_configR4);
-        _stores.Add(FhirReleases.FhirSequenceCodes.R4, _candleR4);
+        _storeR4 = new VersionedFhirStore();
+        _storeR4.Init(_configR4);
+        _stores.Add(FhirReleases.FhirSequenceCodes.R4, _storeR4);
 
-        _candleR4B = new VersionedFhirStore();
-        _candleR4B.Init(_configR4B);
-        _stores.Add(FhirReleases.FhirSequenceCodes.R4B, _candleR4B);
+        _storeR4B = new VersionedFhirStore();
+        _storeR4B.Init(_configR4B);
+        _stores.Add(FhirReleases.FhirSequenceCodes.R4B, _storeR4B);
 
-        _candleR5 = new VersionedFhirStore();
-        _candleR5.Init(_configR5);
-        _stores.Add(FhirReleases.FhirSequenceCodes.R5, _candleR5);
+        _storeR5 = new VersionedFhirStore();
+        _storeR5.Init(_configR5);
+        _stores.Add(FhirReleases.FhirSequenceCodes.R5, _storeR5);
     }
 
     /// <summary>Gets store for version.</summary>
@@ -122,13 +122,13 @@ public class FhirStoreTests
         switch (version)
         {
             case FhirReleases.FhirSequenceCodes.R4:
-                return _candleR4;
+                return _storeR4;
 
             case FhirReleases.FhirSequenceCodes.R4B:
-                return _candleR4B;
+                return _storeR4B;
 
             case FhirReleases.FhirSequenceCodes.R5:
-                return _candleR5;
+                return _storeR5;
         }
 
         throw new ArgumentException($"Invalid version: {version}", nameof(version));
@@ -1063,9 +1063,9 @@ public class TestPostPutIdSemanticsStrict
             BaseUrl = "http://localhost/fhir/r4-strict",
             Strict = true,
         };
-        IFhirStore candleR4 = new VersionedFhirStore();
-        candleR4.Init(configR4);
-        _stores.Add(FhirReleases.FhirSequenceCodes.R4, candleR4);
+        IFhirStore storeR4 = new VersionedFhirStore();
+        storeR4.Init(configR4);
+        _stores.Add(FhirReleases.FhirSequenceCodes.R4, storeR4);
 
         TenantConfiguration configR4B = new()
         {
@@ -1074,9 +1074,9 @@ public class TestPostPutIdSemanticsStrict
             BaseUrl = "http://localhost/fhir/r4b-strict",
             Strict = true,
         };
-        IFhirStore candleR4B = new VersionedFhirStore();
-        candleR4B.Init(configR4B);
-        _stores.Add(FhirReleases.FhirSequenceCodes.R4B, candleR4B);
+        IFhirStore storeR4B = new VersionedFhirStore();
+        storeR4B.Init(configR4B);
+        _stores.Add(FhirReleases.FhirSequenceCodes.R4B, storeR4B);
 
         TenantConfiguration configR5 = new()
         {
@@ -1378,7 +1378,7 @@ public class TestStrictModeIdSemantics
     public void PutWithInvalidUrlIdCharacterStrictRejectsWith400(FhirReleases.FhirSequenceCodes version)
     {
         IFhirStore store = GetStore(version);
-        // Underscore is not in FHIR id regex [A-Za-z0-9\-\.]{1,64}. Firely's
+        // Underscore is not in FHIR id regex [A-Za-z0-9\-\.]{1,64}. The
         // BACKWARDSCOMPATIBLE deserializer also rejects this id at parse time
         // with a 422 Structure outcome, so under strict mode the request can
         // bounce out either at the parse boundary (422) or our explicit strict
@@ -1606,7 +1606,7 @@ public class TestLenientModeIdSemantics
     public void PutOnMissingLenientCreatesWith201(FhirReleases.FhirSequenceCodes version)
     {
         IFhirStore store = GetStore(version);
-        // Use a spec-conformant id so Firely's parser doesn't reject it before
+        // Use a spec-conformant id so the parser doesn't reject it before
         // we exercise the lenient create-as-update path.
         string id = $"lenient-create-{version.ToString().ToLowerInvariant()}";
         string body = "{\"resourceType\":\"Patient\",\"id\":\"" + id + "\",\"gender\":\"male\"}";
@@ -1685,7 +1685,7 @@ public class TestValidateOperation : IClassFixture<FhirStoreTests>
     public void ValidateInvalidResourceReturnsErrorIssues(FhirReleases.FhirSequenceCodes version)
     {
         // H1 — Observation missing its required `code` element. Observation.code is
-        // cardinality 1..1 in R4, R4B, and R5, and Firely's POCO validator (invoked
+        // cardinality 1..1 in R4, R4B, and R5, and the POCO validator (invoked
         // with validateRecursively: true) enforces [Cardinality] attributes, so the
         // missing-required-element issue surfaces consistently across versions.
         IFhirStore fhirStore = _fixture.GetStoreForVersion(version);
@@ -1709,7 +1709,7 @@ public class TestValidateOperation : IClassFixture<FhirStoreTests>
 
         bool success = fhirStore.TypeOperation(ctx, out FhirResponseContext response);
 
-        // The Firely BACKWARDSCOMPATIBLE deserializer rejects an Observation missing
+        // The BACKWARDSCOMPATIBLE deserializer rejects an Observation missing
         // the required `code` element at parse time (returns 415 + Error outcome via
         // the dispatcher's "non-FHIR content" branch). When that happens, the parse
         // failure is itself a FHIR-spec validation outcome — the error is present

@@ -16,7 +16,7 @@ namespace FhirCandle.Operations;
 /// Structural port of the <c>$feature-query</c> operation (CapabilityStatement feature-query IG).
 /// <para>
 /// <b>Placeholder answer logic</b>: the old file's answers came from
-/// <c>VersionedFhirStore.TryQueryCapabilityFeature</c>, which inspected a typed Firely
+/// <c>VersionedFhirStore.TryQueryCapabilityFeature</c>, which inspected a typed
 /// <c>CapabilityStatement</c> POCO graph. That POCO graph no longer exists (the new engine's
 /// CapabilityStatement is a raw JSON literal - see <c>BuildCapabilityStatement</c>), and porting the
 /// feature-matching logic against the JSON shape is out of scope for this task (no test requires it).

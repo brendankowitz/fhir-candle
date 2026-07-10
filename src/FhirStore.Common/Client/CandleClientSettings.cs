@@ -10,7 +10,7 @@ using FhirCandle.Extensions;
 namespace FhirCandle.Client;
 
 /// <summary>
-/// A candle client settings - mostly passthrough options to the Firely SDK Client.</summary>
+/// Candle client settings - mostly passthrough options for FHIR client operations.</summary>
 public record class CandleClientSettings : ICloneable
 {
     /// <summary>Values that represent resource formats.</summary>

@@ -11,11 +11,11 @@ namespace FhirCandle.Storage;
 /// performing <c>$validate-code</c>-style checks against stored ValueSets.
 /// </summary>
 /// <remarks>
-/// Ignixa-model port of the old (Firely-based) <c>StoreTerminologyService</c>. That type implemented
-/// Firely's <c>ITerminologyService</c> (registered with the FHIRPath <c>%terminologies</c> resolver);
+/// Ignixa-model port of a previous <c>StoreTerminologyService</c>. That type implemented
+/// an <c>ITerminologyService</c> (registered with the FHIRPath <c>%terminologies</c> resolver);
 /// nothing in the new engine consumes that interface, so this port keeps only the three members that
 /// are actually used: <see cref="VsContains"/>, <see cref="StoreProcessValueSet"/>, and
-/// <see cref="ValueSetValidateCode"/>. The six Firely stub members that always threw
+/// <see cref="ValueSetValidateCode"/>. Six stub members that always threw
 /// <c>NotImplementedException</c> (Subsumes, CodeSystemValidateCode, Lookup, Translate, Closure, Expand)
 /// are dropped entirely.
 /// </remarks>

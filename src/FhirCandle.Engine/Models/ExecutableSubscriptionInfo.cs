@@ -11,7 +11,7 @@ namespace FhirCandle.Models;
 /// The executable trigger/filter state a <c>ResourceStore</c> holds for one SubscriptionTopic.
 /// </summary>
 /// <remarks>
-/// Ignixa-model port of the old Firely-based type: the old <c>CompiledExpression</c> FHIRPath trigger
+/// Ignixa-model port of a previous type: the old <c>CompiledExpression</c> FHIRPath trigger
 /// becomes a plain expression string (Ignixa's <c>IsTrue</c> extension has built-in AST/delegate
 /// caching), and the old <c>ParsedSearchParameter</c> lists become <see cref="ParsedQuery"/> instances
 /// evaluated through <c>CandleSearchService.TestForMatch</c>.

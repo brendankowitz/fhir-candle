@@ -2694,10 +2694,10 @@ public class R4TestsSummary : IClassFixture<R4Tests>
 //        serializedResource.ShouldNotBeNullOrEmpty();
 //        serializedOutcome.ShouldNotBeNullOrEmpty();
 
-//        sc = candleR4.FhirCandle.Serialization.Utils.TryDeserializeFhir(
+//        sc = store.Serialization.Utils.TryDeserializeFhir(
 //            serializedResource,
 //            "application/fhir+json",
-//            out Hl7.Fhir.Model.Resource? r,
+//            out JsonObject? r,
 //            out _);
 
 //        sc.ShouldBe(HttpStatusCode.OK);

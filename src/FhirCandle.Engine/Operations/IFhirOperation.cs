@@ -9,7 +9,7 @@ using Ignixa.Serialization.SourceNodes;
 namespace FhirCandle.Operations;
 
 /// <summary>Interface for executable FHIR operations, ported to operate over <see cref="ResourceJsonNode"/>
-/// instead of Firely POCOs.</summary>
+/// instead of typed POCOs.</summary>
 public interface IFhirOperation
 {
     /// <summary>Gets the name of the operation.</summary>

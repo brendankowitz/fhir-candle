@@ -32,7 +32,7 @@ namespace FhirCandle.Storage;
 /// A FHIR store spanning every resource type for a single tenant/FHIR-version combination.
 /// </summary>
 /// <remarks>
-/// This is the Ignixa-model port of the old (Firely-based) <c>VersionedFhirStore</c>: the core
+/// This is the Ignixa-model port of a previous <c>VersionedFhirStore</c>: the core
 /// CRUD/search/dispatch surface plus terminology (<see cref="StoreTerminologyService"/>), compartments
 /// (<see cref="ParsedCompartment"/>), operations, and subscription/topic execution
 /// (<see cref="FhirCandle.Subscriptions.TopicConverter"/>/<see cref="FhirCandle.Subscriptions.SubscriptionConverter"/>).
@@ -232,8 +232,8 @@ public sealed class VersionedFhirStore : IFhirStore
         _maxResourceCount = config.MaxResourceCount;
     }
 
-    /// <summary>Every <see cref="IFhirOperation"/> implementation in this assembly. Mirrors the old
-    /// (Firely-based) file's <c>CheckLoadedOperations</c> reflection scan, but as an explicit list:
+    /// <summary>Every <see cref="IFhirOperation"/> implementation in this assembly. Mirrors the previous
+    /// file's <c>CheckLoadedOperations</c> reflection scan, but as an explicit list:
     /// there are exactly 8 known, sealed, same-assembly operations and no plugin story, so reflection
     /// buys nothing here - it is also trimming/AOT-hostile, and a constructor-throws failure would
     /// surface as a runtime reflection stack trace at store construction instead of a compile error.</summary>
@@ -295,7 +295,7 @@ public sealed class VersionedFhirStore : IFhirStore
     /// version, keyed by resource type and interaction code. Same gating and call sites as
     /// <see cref="RegisterEligibleOperations"/>: called from <see cref="Init"/> and again at the end of
     /// <see cref="LoadPackage"/>, because a hook's <see cref="IFhirInteractionHook.RequiresPackage"/>
-    /// gate only becomes satisfiable once its package has loaded. Unlike the old (Firely-based) file's
+    /// gate only becomes satisfiable once its package has loaded. Unlike the previous file's
     /// <c>DiscoverInteractionHooks</c>, no wildcard (<c>*</c>/<c>Resource</c>) registration is
     /// supported - no existing hook targets all resource types.</summary>
     private void RegisterEligibleHooks()
@@ -392,7 +392,7 @@ public sealed class VersionedFhirStore : IFhirStore
 
     /// <summary>Deletes every non-protected resource; when <paramref name="keepConformance"/> is true,
     /// resources of a conformance-bearing type (<see cref="ResourceStore.ResourcesAreConformance"/>,
-    /// e.g. StructureDefinition, SearchParameter) are preserved. Semantics match the old (Firely-based)
+    /// e.g. StructureDefinition, SearchParameter) are preserved. Semantics match the previous
     /// port's <c>$reset-store</c> introduced in commit f4675d0. Protected-resource filtering is handled
     /// by <see cref="ResourceStore.InstanceDelete"/> itself.</summary>
     public void ResetStore(bool keepConformance)
@@ -486,8 +486,8 @@ public sealed class VersionedFhirStore : IFhirStore
             return false;
         }
 
-        // batch/transaction bundles are executed rather than stored, matching the old
-        // (Firely-based) load behavior - storing them would hide their entries from search
+        // batch/transaction bundles are executed rather than stored, matching the previous
+        // load behavior - storing them would hide their entries from search
         if (resource.ResourceType == "Bundle")
         {
             var loadBundle = resource is BundleJsonNode typedBundle
@@ -1968,7 +1968,7 @@ public sealed class VersionedFhirStore : IFhirStore
     /// <summary>Builds the CapabilityStatement as a raw <see cref="JsonObject"/> tree (there is no typed
     /// <c>CapabilityStatementJsonNode</c> wrapper in Ignixa), then wraps it via
     /// <see cref="JsonSourceNodeFactory"/>. Ports the old file's <c>generateCapabilities</c>: every
-    /// <c>CapabilityStatement.XComponent</c> becomes a <see cref="JsonObject"/> literal, and every Firely
+    /// <c>CapabilityStatement.XComponent</c> becomes a <see cref="JsonObject"/> literal, and every SDK
     /// enum (<c>TypeRestfulInteraction.Read</c>, <c>RestfulCapabilityMode.Server</c>, etc.) becomes its
     /// FHIR wire-format string literal directly.</summary>
     private ResourceJsonNode BuildCapabilityStatement(FhirRequestContext? ctx)

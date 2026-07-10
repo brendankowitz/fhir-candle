@@ -10,7 +10,7 @@ using Ignixa.Serialization.SourceNodes;
 namespace FhirCandle.InteractionHooks;
 
 /// <summary>Interface for FHIR interaction hooks, ported to operate over <see cref="ResourceJsonNode"/>
-/// instead of Firely POCOs. Hooks run inside CRUD dispatch (see the Post-hook invocation in
+/// instead of typed POCOs. Hooks run inside CRUD dispatch (see the Post-hook invocation in
 /// <see cref="VersionedFhirStore"/>'s create/update paths) and may inspect or replace the resource,
 /// perform additional store interactions, or complete the request themselves by setting a
 /// status code on their response.</summary>

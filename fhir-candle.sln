@@ -7,14 +7,6 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "fhir-candle", "src\fhir-can
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "fhir-candle.Tests", "src\fhir-candle.Tests\fhir-candle.Tests.csproj", "{FC92614E-5DB0-4C6D-B8D3-667BD55BAB5B}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FhirCandle.R4B", "src\FhirStore.R4B\FhirCandle.R4B.csproj", "{759EB849-EE81-4DAE-8AB4-941E1F2824E7}"
-EndProject
-Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "FhirCandle.Versioned", "src\FhirStore.CommonVersioned\FhirCandle.Versioned.shproj", "{05DD03DE-A22D-4FD8-A8A8-06FD05F20A18}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FhirCandle.R5", "src\FhirStore.R5\FhirCandle.R5.csproj", "{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FhirCandle.R4", "src\FhirStore.R4\FhirCandle.R4.csproj", "{316B7737-194D-41D8-8725-B79C09CD8F93}"
-EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FhirCandle.Common", "src\FhirStore.Common\FhirCandle.Common.csproj", "{F5886ACD-3CCD-4EA0-8438-A33AD0ED7A42}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{8B6BFF93-0260-40D3-BF26-175BC295D77B}"
@@ -89,42 +81,6 @@ Global
 		{FC92614E-5DB0-4C6D-B8D3-667BD55BAB5B}.Release|x64.Build.0 = Release|Any CPU
 		{FC92614E-5DB0-4C6D-B8D3-667BD55BAB5B}.Release|x86.ActiveCfg = Release|Any CPU
 		{FC92614E-5DB0-4C6D-B8D3-667BD55BAB5B}.Release|x86.Build.0 = Release|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Debug|x64.Build.0 = Debug|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Debug|x86.Build.0 = Debug|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Release|Any CPU.Build.0 = Release|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Release|x64.ActiveCfg = Release|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Release|x64.Build.0 = Release|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Release|x86.ActiveCfg = Release|Any CPU
-		{759EB849-EE81-4DAE-8AB4-941E1F2824E7}.Release|x86.Build.0 = Release|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Debug|x64.Build.0 = Debug|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Debug|x86.Build.0 = Debug|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Release|Any CPU.Build.0 = Release|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Release|x64.ActiveCfg = Release|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Release|x64.Build.0 = Release|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Release|x86.ActiveCfg = Release|Any CPU
-		{B767A8A4-910F-4FC3-BE6B-A0515C6E167E}.Release|x86.Build.0 = Release|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Debug|x64.Build.0 = Debug|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Debug|x86.Build.0 = Debug|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Release|Any CPU.Build.0 = Release|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Release|x64.ActiveCfg = Release|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Release|x64.Build.0 = Release|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Release|x86.ActiveCfg = Release|Any CPU
-		{316B7737-194D-41D8-8725-B79C09CD8F93}.Release|x86.Build.0 = Release|Any CPU
 		{F5886ACD-3CCD-4EA0-8438-A33AD0ED7A42}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{F5886ACD-3CCD-4EA0-8438-A33AD0ED7A42}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F5886ACD-3CCD-4EA0-8438-A33AD0ED7A42}.Debug|x64.ActiveCfg = Debug|Any CPU
@@ -223,11 +179,5 @@ Global
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {2F9896CC-1A33-4A99-95F9-8D13DF291779}
-	EndGlobalSection
-	GlobalSection(SharedMSBuildProjectFiles) = preSolution
-		src\FhirStore.CommonVersioned\FhirStore.CommonVersioned.projitems*{05dd03de-a22d-4fd8-a8a8-06fd05f20a18}*SharedItemsImports = 13
-		src\FhirStore.CommonVersioned\FhirStore.CommonVersioned.projitems*{316b7737-194d-41d8-8725-b79c09cd8f93}*SharedItemsImports = 5
-		src\FhirStore.CommonVersioned\FhirStore.CommonVersioned.projitems*{759eb849-ee81-4dae-8ab4-941e1f2824e7}*SharedItemsImports = 5
-		src\FhirStore.CommonVersioned\FhirStore.CommonVersioned.projitems*{b767a8a4-910f-4fc3-be6b-a0515c6e167e}*SharedItemsImports = 5
 	EndGlobalSection
 EndGlobal

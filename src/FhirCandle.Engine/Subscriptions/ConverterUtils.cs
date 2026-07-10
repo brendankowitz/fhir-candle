@@ -9,7 +9,7 @@ namespace FhirCandle.Subscriptions;
 
 /// <summary>
 /// JSON-walking utilities shared by <see cref="TopicConverter"/> and <see cref="SubscriptionConverter"/>.
-/// Ports the old Firely <c>ConverterUtils.ParseExtensions</c> family from <c>Extension</c> POCOs to
+/// Ports the <c>ConverterUtils.ParseExtensions</c> family from <c>Extension</c> POCOs to
 /// <see cref="JsonObject"/> trees, including FHIR JSON's <c>_property</c> sibling convention for
 /// extensions on primitive values.
 /// </summary>

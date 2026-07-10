@@ -61,7 +61,7 @@ public static class SerializationUtils
     }
 
     // Ignixa's SerializeToString uses JavaScriptEncoder.Default, which escapes HTML-sensitive
-    // characters ('+' becomes +, '<' becomes <); the pre-migration (Firely) serializer
+    // characters ('+' becomes +, '<' becomes <); the previous serializer
     // emitted them raw, and stored test expectations depend on that.
     private static readonly System.Text.Json.JsonSerializerOptions _relaxedJsonOptions = new()
     {
@@ -94,7 +94,7 @@ public static class SerializationUtils
         };
 
         // Status-derived default mirrors the pre-migration builder, whose successful outcomes
-        // carried issue code "success" (an R5 IssueType code the Firely enum exposed for all
+        // carried issue code "success" (an R5 IssueType code the previous SDK exposed for all
         // versions); Ignixa's IssueType enum lacks it, so set the raw property.
         if (issueType is null && (int)sc < 300)
         {
