@@ -69,6 +69,15 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
     {
         ArgumentNullException.ThrowIfNull(expression);
 
+        // _id never gets index entries (see VisitSearchParameter); every stored resource has an
+        // id, so :missing=true matches nothing and :missing=false matches everything.
+        if (expression.Parameter.Code == "_id")
+        {
+            return expression.IsMissing
+                ? input => input.Where(_ => false)
+                : input => input;
+        }
+
         string parameterName = expression.Parameter.Name;
 
         return expression.IsMissing
@@ -198,20 +207,65 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
             return false;
         }
 
-        StringComparison comparison = expression.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        string expressionValue = expression.Value;
+
+        // FHIR default string search is case- AND accent-insensitive (R4 §3.1.1.3); token and
+        // quantity system/code comparisons were case-insensitive in the pre-migration evaluators
+        // (Ignixa emits them case-sensitive)
+        bool ignoreCase = expression.IgnoreCase || IsTokenOrQuantityField(expression.FieldName);
+
+        if (expression.FieldName == FieldName.String && expression.IgnoreCase)
+        {
+            fieldValue = FoldForSearch(fieldValue);
+            expressionValue = FoldForSearch(expressionValue);
+
+            // a value that folds away entirely (e.g. a bare combining accent) matched nothing in
+            // the pre-migration evaluator; an empty prefix/substring here would match everything
+            if (expressionValue.Length == 0)
+            {
+                return false;
+            }
+        }
+
+        StringComparison comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
         return expression.StringOperator switch
         {
-            StringOperator.Equals => string.Equals(fieldValue, expression.Value, comparison),
-            StringOperator.StartsWith => fieldValue.StartsWith(expression.Value, comparison),
-            StringOperator.Contains => fieldValue.Contains(expression.Value, comparison),
-            StringOperator.EndsWith => fieldValue.EndsWith(expression.Value, comparison),
-            StringOperator.NotStartsWith => !fieldValue.StartsWith(expression.Value, comparison),
-            StringOperator.NotContains => !fieldValue.Contains(expression.Value, comparison),
-            StringOperator.NotEndsWith => !fieldValue.EndsWith(expression.Value, comparison),
-            StringOperator.LeftSideStartsWith => expression.Value.StartsWith(fieldValue, comparison),
+            StringOperator.Equals => string.Equals(fieldValue, expressionValue, comparison),
+            StringOperator.StartsWith => fieldValue.StartsWith(expressionValue, comparison),
+            StringOperator.Contains => fieldValue.Contains(expressionValue, comparison),
+            StringOperator.EndsWith => fieldValue.EndsWith(expressionValue, comparison),
+            StringOperator.NotStartsWith => !fieldValue.StartsWith(expressionValue, comparison),
+            StringOperator.NotContains => !fieldValue.Contains(expressionValue, comparison),
+            StringOperator.NotEndsWith => !fieldValue.EndsWith(expressionValue, comparison),
+            StringOperator.LeftSideStartsWith => expressionValue.StartsWith(fieldValue, comparison),
             _ => throw new SearchOperationNotSupportedException($"StringOperator {expression.StringOperator} is not supported."),
         };
+    }
+
+    private static bool IsTokenOrQuantityField(FieldName fieldName) =>
+        fieldName is FieldName.TokenSystem or FieldName.TokenCode or FieldName.QuantitySystem or FieldName.QuantityCode;
+
+    /// <summary>Folds a string for accent-insensitive comparison: NFD-normalize, drop combining
+    /// marks, recompose - the same folding the pre-migration evaluator applied.</summary>
+    private static string FoldForSearch(string s)
+    {
+        if (s.All(char.IsAscii))
+        {
+            return s;
+        }
+
+        string normalized = s.Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(normalized.Length);
+        foreach (char c in normalized)
+        {
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
     }
 
     private static string? GetStringField(FieldName fieldName, ISearchValue value) =>
@@ -313,6 +367,9 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
                 resourceId,
                 str.Value,
                 str.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal),
+            // :not on a token normally means "no index entry matches", but each resource has
+            // exactly one id, so plain negation of the direct comparison is equivalent
+            NotExpression not => !MatchesId(not.Expression, resourceId),
             MultiaryExpression { MultiaryOperation: MultiaryOperator.Or } multiary =>
                 multiary.Expressions.Any(x => MatchesId(x, resourceId)),
             MultiaryExpression { MultiaryOperation: MultiaryOperator.And } multiary =>

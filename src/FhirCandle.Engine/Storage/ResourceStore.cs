@@ -134,6 +134,11 @@ public sealed class ResourceStore : IVersionedResourceStore
 
     /// <summary>Occurs when a resource change matches a subscription (topic triggers plus
     /// subscription filters).</summary>
+    /// <summary>Raised after a stored SearchParameter resource has been (un)registered with the
+    /// search service - listeners re-derive state that depends on the active definition set
+    /// (stored indexes, capability statement).</summary>
+    public event EventHandler? OnSearchParametersChanged;
+
     public event EventHandler<SubscriptionMatchedEventArgs>? OnSubscriptionEventMatched;
 
     /// <summary>Occurs when a subscription topic trigger fails to evaluate.</summary>
@@ -276,7 +281,7 @@ public sealed class ResourceStore : IVersionedResourceStore
                 statusCode = HttpStatusCode.Conflict;
                 outcome = SerializationUtils.BuildOutcomeForRequest(
                     statusCode,
-                    $"Resource {_resourceName}/{source.Id} already exists; POST-based create interaction cannot overwrite existing resources",
+                    $"Resource {_resourceName}/{source.Id} already exists; POST-base create interaction cannot overwrite existing resources",
                     OperationOutcomeJsonNode.IssueType.Duplicate);
                 return null;
             }
@@ -469,6 +474,19 @@ public sealed class ResourceStore : IVersionedResourceStore
         RunPostCrudSideEffects(previous, isDelete: true);
 
         return previous;
+    }
+
+    /// <summary>Recomputes every stored resource's search index - required after the active
+    /// SearchParameter definition set changes, since indexes are extracted at write time.</summary>
+    public void RebuildIndexes()
+    {
+        lock (_lockObject)
+        {
+            foreach ((string id, ResourceJsonNode resource) in _resourceStore)
+            {
+                _indexes[id] = _search.Index(resource.ToElement(_schema));
+            }
+        }
     }
 
     /// <inheritdoc/>
@@ -963,6 +981,8 @@ public sealed class ResourceStore : IVersionedResourceStore
                     {
                         _search.AddPackageSearchParameters([resource.ToElement(_schema)]);
                     }
+
+                    OnSearchParametersChanged?.Invoke(this, EventArgs.Empty);
                 }
                 catch (Exception ex)
                 {

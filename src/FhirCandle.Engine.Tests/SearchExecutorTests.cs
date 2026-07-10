@@ -132,12 +132,12 @@ public class SearchExecutorTests
 
         ParsedQuery matchQuery = fx.Search.ParseQuery("Observation", "subject:Patient.name=Chalmers");
         matchQuery.ChainedExpressions.ShouldHaveSingleItem();
-        SearchExecutor.EvaluateChained(matchQuery.ChainedExpressions[0], observation, fx.Resolve, fx.Search, R4)
+        SearchExecutor.EvaluateChained(matchQuery.ChainedExpressions[0][0], observation, fx.Resolve, fx.Search, R4)
             .ShouldBeTrue();
 
         ParsedQuery noMatchQuery = fx.Search.ParseQuery("Observation", "subject:Patient.name=Nomatch");
         noMatchQuery.ChainedExpressions.ShouldHaveSingleItem();
-        SearchExecutor.EvaluateChained(noMatchQuery.ChainedExpressions[0], observation, fx.Resolve, fx.Search, R4)
+        SearchExecutor.EvaluateChained(noMatchQuery.ChainedExpressions[0][0], observation, fx.Resolve, fx.Search, R4)
             .ShouldBeFalse();
     }
 
@@ -151,11 +151,11 @@ public class SearchExecutorTests
         ParsedQuery hasQuery = fx.Search.ParseQuery("Patient", "_has:Observation:subject:code=http://loinc.org|8480-6");
         hasQuery.ChainedExpressions.ShouldHaveSingleItem();
 
-        SearchExecutor.EvaluateChained(hasQuery.ChainedExpressions[0], patient, fx.Resolve, fx.Search, R4)
+        SearchExecutor.EvaluateChained(hasQuery.ChainedExpressions[0][0], patient, fx.Resolve, fx.Search, R4)
             .ShouldBeTrue();
 
         ParsedQuery noMatchQuery = fx.Search.ParseQuery("Patient", "_has:Observation:subject:code=http://loinc.org|1234-5");
-        SearchExecutor.EvaluateChained(noMatchQuery.ChainedExpressions[0], patient, fx.Resolve, fx.Search, R4)
+        SearchExecutor.EvaluateChained(noMatchQuery.ChainedExpressions[0][0], patient, fx.Resolve, fx.Search, R4)
             .ShouldBeFalse();
     }
 

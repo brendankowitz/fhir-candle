@@ -191,6 +191,17 @@ public sealed class VersionedFhirStore : IFhirStore
                 case "Subscription":
                     rs.SubscriptionValidator = ValidateSubscriptionResource;
                     break;
+
+                case "SearchParameter":
+                    rs.OnSearchParametersChanged += (_, _) =>
+                    {
+                        _capabilitiesAreStale = true;
+                        foreach (ResourceStore store in _store.Values)
+                        {
+                            store.RebuildIndexes();
+                        }
+                    };
+                    break;
             }
 
             _store.Add(resourceType, rs);
@@ -470,9 +481,39 @@ public sealed class VersionedFhirStore : IFhirStore
         HttpStatusCode sc = SerializationUtils.TryDeserializeFhir(
             File.ReadAllText(file.FullName), format, out ResourceJsonNode? resource, out _, _schema);
 
-        if (sc != HttpStatusCode.OK ||
-            resource is null ||
-            !_store.TryGetValue(resource.ResourceType, out ResourceStore? rs))
+        if (sc != HttpStatusCode.OK || resource is null)
+        {
+            return false;
+        }
+
+        // batch/transaction bundles are executed rather than stored, matching the old
+        // (Firely-based) load behavior - storing them would hide their entries from search
+        if (resource.ResourceType == "Bundle")
+        {
+            var loadBundle = resource is BundleJsonNode typedBundle
+                ? typedBundle
+                : new BundleJsonNode(resource.MutableNode, resource.FhirVersion);
+
+            if (loadBundle.Type is BundleJsonNode.BundleType.Batch or BundleJsonNode.BundleType.Transaction)
+            {
+                return DoProcessBundle(
+                    new FhirRequestContext
+                    {
+                        TenantName = _config.ControllerName,
+                        Store = this,
+                        HttpMethod = "POST",
+                        Url = _config.BaseUrl + "/Bundle",
+                        UrlPath = "/Bundle",
+                        Authorization = null,
+                        Interaction = Common.StoreInteractionCodes.SystemBundle,
+                        SourceObject = loadBundle,
+                    },
+                    loadBundle,
+                    out _);
+            }
+        }
+
+        if (!_store.TryGetValue(resource.ResourceType, out ResourceStore? rs))
         {
             return false;
         }
@@ -992,6 +1033,19 @@ public sealed class VersionedFhirStore : IFhirStore
                     break;
 
                 case 1:
+                    // An explicit URL id must agree with the resource the criteria matched (FHIR
+                    // conditional update: the match IS the target); adopting the matched id would
+                    // silently redirect the update to a different resource.
+                    if (!string.IsNullOrEmpty(id) && !matches[0].Id.Equals(id, StringComparison.Ordinal))
+                    {
+                        response = new()
+                        {
+                            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.PreconditionFailed, $"Conditional update query returned a match with a id: {matches[0].Id}, expected {id}"),
+                            StatusCode = HttpStatusCode.PreconditionFailed,
+                        };
+                        return false;
+                    }
+
                     content.Id = matches[0].Id;
                     break;
 
@@ -1129,17 +1183,8 @@ public sealed class VersionedFhirStore : IFhirStore
 
         ParsedQuery query = _search.ParseQuery(ctx.ResourceType, searchQueryParams);
 
-        if (query.UnknownParameters.Count > 0 && EffectiveSearchHandling(ctx) == SearchParameterHandling.Strict)
+        if (TryBuildStrictSearchOutcome(ctx, query, out response))
         {
-            var issues = query.UnknownParameters
-                .Select(p => (StrictRuleCode.SearchUnknownParameter, $"Unknown search parameter '{p}' for this resource type.", OperationOutcomeJsonNode.IssueType.NotSupported))
-                .ToList();
-
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForStrictRules(HttpStatusCode.BadRequest, issues, _config.FhirVersion),
-                StatusCode = HttpStatusCode.BadRequest,
-            };
             return false;
         }
 
@@ -1156,11 +1201,10 @@ public sealed class VersionedFhirStore : IFhirStore
             matches = matches.OrderBy(m => m, comparer).ToList();
         }
 
-        string selfLink = $"{GetBaseUrl(ctx)}/{ctx.ResourceType}";
-        if (!string.IsNullOrEmpty(searchQueryParams))
-        {
-            selfLink = selfLink + "?" + searchQueryParams.TrimStart('?');
-        }
+        string selfLink = BuildSelfLink(
+            $"{GetBaseUrl(ctx)}/{ctx.ResourceType}",
+            searchQueryParams,
+            [.. query.UnknownParameters, .. query.MalformedParameters.Select(p => p.Name)]);
 
         BundleJsonNode bundle = BuildSearchBundle(ctx, query, matches, selfLink);
 
@@ -1170,6 +1214,55 @@ public sealed class VersionedFhirStore : IFhirStore
             ResourceType = "Bundle",
             Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "Type search successful"),
             StatusCode = HttpStatusCode.OK,
+        };
+        return true;
+    }
+
+    /// <summary>Builds a search self link from the request query, dropping parameters the search
+    /// ignored (unknown or malformed under lenient handling) - the self link must reflect only the
+    /// parameters actually applied.</summary>
+    private static string BuildSelfLink(string basePath, string searchQueryParams, IReadOnlyCollection<string> ignoredParameterNames)
+    {
+        if (string.IsNullOrEmpty(searchQueryParams))
+        {
+            return basePath;
+        }
+
+        string query = searchQueryParams.TrimStart('?');
+
+        if (ignoredParameterNames.Count > 0)
+        {
+            query = string.Join('&', query
+                .Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Where(pair => !ignoredParameterNames.Contains(pair.Split('=', 2)[0], StringComparer.Ordinal)));
+        }
+
+        return string.IsNullOrEmpty(query) ? basePath : basePath + "?" + query;
+    }
+
+    /// <summary>Under strict handling, builds a 400 response listing every unknown and malformed
+    /// search parameter in <paramref name="query"/>. Returns false (no outcome) under lenient
+    /// handling or when nothing was ignored - lenient searches silently drop these parameters and
+    /// omit them from the self link instead.</summary>
+    private bool TryBuildStrictSearchOutcome(FhirRequestContext ctx, ParsedQuery query, out FhirResponseContext response)
+    {
+        if ((query.UnknownParameters.Count == 0 && query.MalformedParameters.Count == 0) ||
+            EffectiveSearchHandling(ctx) != SearchParameterHandling.Strict)
+        {
+            response = new();
+            return false;
+        }
+
+        var issues = query.UnknownParameters
+            .Select(p => (StrictRuleCode.SearchUnknownParameter, $"Unknown search parameter '{p}' for this resource type.", OperationOutcomeJsonNode.IssueType.NotSupported))
+            .Concat(query.MalformedParameters
+                .Select(p => (StrictRuleCode.SearchMalformedParameter, $"Search parameter '{p.Name}' could not be parsed: {p.Message}", OperationOutcomeJsonNode.IssueType.Invalid)))
+            .ToList();
+
+        response = new()
+        {
+            Outcome = SerializationUtils.BuildOutcomeForStrictRules(HttpStatusCode.BadRequest, issues, _config.FhirVersion),
+            StatusCode = HttpStatusCode.BadRequest,
         };
         return true;
     }
@@ -1184,7 +1277,7 @@ public sealed class VersionedFhirStore : IFhirStore
         query.ChainedExpressions.Count == 0
             ? matches
             : matches.Where(candidate => query.ChainedExpressions.All(
-                expr => SearchExecutor.EvaluateChained(expr, candidate, GetStore, _search, _schema))).ToList();
+                group => group.Any(expr => SearchExecutor.EvaluateChained(expr, candidate, GetStore, _search, _schema)))).ToList();
 
     /// <summary>Builds a searchset <see cref="BundleJsonNode"/> from already-filtered/sorted
     /// <paramref name="matches"/>, resolving <c>_include</c>/<c>_revinclude</c> per <paramref name="query"/>.
@@ -1222,7 +1315,7 @@ public sealed class VersionedFhirStore : IFhirStore
                 bundle.Entry.Add(new BundleComponentJsonNode
                 {
                     FullUrl = $"{GetBaseUrl(ctx)}/{relativeUrl}",
-                    Resource = resource,
+                    Resource = JsonSourceNodeFactory.Parse((JsonNode)resource.MutableNode.DeepClone()),
                     Search = new BundleComponentSearchJsonNode { Mode = "match" },
                 });
             }
@@ -1257,7 +1350,7 @@ public sealed class VersionedFhirStore : IFhirStore
 
         bundle.Entry.Add(new BundleComponentJsonNode
         {
-            Resource = included,
+            Resource = JsonSourceNodeFactory.Parse((JsonNode)included.MutableNode.DeepClone()),
             Search = new BundleComponentSearchJsonNode { Mode = "include" },
         });
     }
@@ -2080,15 +2173,172 @@ public sealed class VersionedFhirStore : IFhirStore
     /// <summary>Not yet implemented in this task.</summary>
     public bool TypeDelete(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("TypeDelete is not yet implemented.");
-        return false;
+        bool success = DoTypeDelete(ctx, out response);
+        response = SerializeResponse(ctx, response);
+        return success;
     }
 
-    /// <summary>Not yet implemented in this task.</summary>
+    private bool DoTypeDelete(FhirRequestContext ctx, out FhirResponseContext response)
+    {
+        if (string.IsNullOrEmpty(ctx.ResourceType))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.BadRequest, "Resource type is required for type-delete interactions", OperationOutcomeJsonNode.IssueType.Structure),
+                StatusCode = HttpStatusCode.BadRequest,
+            };
+            return false;
+        }
+
+        if (!_store.TryGetValue(ctx.ResourceType, out ResourceStore? rs))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Resource type: {ctx.ResourceType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        // A type-level (conditional) delete MUST carry real search criteria. Control/result
+        // parameters (_format, _pretty, _count, ...) are not criteria; without at least one real
+        // search parameter the type search would match every resource of the type, so reject the
+        // request rather than deleting everything (covers both empty and control-only queries).
+        if (!FhirCandle.Search.Common.QueryContainsSearchParameters(ctx.UrlQuery))
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.BadRequest, $"Type-level delete of {ctx.ResourceType} requires search criteria", OperationOutcomeJsonNode.IssueType.Required),
+                StatusCode = HttpStatusCode.BadRequest,
+            };
+            return false;
+        }
+
+        ParsedQuery query = _search.ParseQuery(ctx.ResourceType, ctx.UrlQuery);
+        List<ResourceJsonNode> matches = ApplyChainedExpressions(rs.TypeSearch(query).ToList(), query);
+
+        if (matches.Count == 0)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"No matches found for type ({ctx.ResourceType}) delete"),
+                StatusCode = HttpStatusCode.NotFound,
+            };
+            return false;
+        }
+
+        if (matches.Count > 1)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.PreconditionFailed, $"Too many matches found for type ({ctx.ResourceType}) delete: ({matches.Count})", OperationOutcomeJsonNode.IssueType.MultipleMatches),
+                StatusCode = HttpStatusCode.PreconditionFailed,
+            };
+            return false;
+        }
+
+        string id = matches[0].Id;
+        ResourceJsonNode? deleted = rs.InstanceDelete(id, _protectedResources);
+
+        if (deleted is null)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.InternalServerError, $"Matched delete resource {id} could not be deleted"),
+                StatusCode = HttpStatusCode.InternalServerError,
+            };
+            return false;
+        }
+
+        response = new()
+        {
+            Resource = deleted,
+            ResourceType = deleted.ResourceType,
+            Id = id,
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, $"Deleted {ctx.ResourceType}/{id}"),
+            StatusCode = HttpStatusCode.OK,
+        };
+        return true;
+    }
+
+    /// <inheritdoc/>
     public bool SystemSearch(FhirRequestContext ctx, out FhirResponseContext response)
     {
-        response = NotImplementedResponse("SystemSearch is not yet implemented.");
-        return false;
+        bool success = DoSystemSearch(ctx, out response);
+        response = SerializeResponse(ctx, response);
+        return success;
+    }
+
+    private bool DoSystemSearch(FhirRequestContext ctx, out FhirResponseContext response)
+    {
+        string searchQueryParams = string.IsNullOrEmpty(ctx.SourceContent) || (ctx.SourceFormat != "application/x-www-form-urlencoded")
+            ? ctx.UrlQuery
+            : ctx.SourceContent;
+
+        string[] resourceTypes = System.Web.HttpUtility.ParseQueryString(searchQueryParams).Get("_type")?.Split(',') ?? [];
+
+        if (resourceTypes.Length == 0)
+        {
+            response = new()
+            {
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.Forbidden, "System search with no resource types is too costly.", OperationOutcomeJsonNode.IssueType.TooCostly),
+                StatusCode = HttpStatusCode.Forbidden,
+            };
+            return false;
+        }
+
+        var matches = new List<ResourceJsonNode>();
+        ParsedQuery? aggregateQuery = null;
+        var unknown = new List<string>();
+
+        foreach (string resourceType in resourceTypes)
+        {
+            if (!_store.TryGetValue(resourceType.Trim(), out ResourceStore? rs))
+            {
+                response = new()
+                {
+                    Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Resource type: {resourceType} is not supported", OperationOutcomeJsonNode.IssueType.NotSupported),
+                    StatusCode = HttpStatusCode.NotFound,
+                };
+                return false;
+            }
+
+            ParsedQuery typeQuery = _search.ParseQuery(resourceType.Trim(), searchQueryParams);
+            aggregateQuery ??= typeQuery;
+
+            if (TryBuildStrictSearchOutcome(ctx, typeQuery, out response))
+            {
+                return false;
+            }
+
+            unknown.AddRange(typeQuery.UnknownParameters);
+            unknown.AddRange(typeQuery.MalformedParameters.Select(p => p.Name));
+
+            matches.AddRange(ApplyChainedExpressions(rs.TypeSearch(typeQuery).ToList(), typeQuery));
+        }
+
+        if (ctx.Authorization is not null)
+        {
+            matches = FilterSearchResultsForAuth(ctx, matches);
+        }
+
+        if (aggregateQuery!.Options.Sort.Count > 0)
+        {
+            var comparer = new FhirSortComparer(_schema, aggregateQuery.Options.Sort, _search.Definitions);
+            matches = matches.OrderBy(m => m, comparer).ToList();
+        }
+
+        string selfLink = BuildSelfLink(GetBaseUrl(ctx), searchQueryParams, unknown);
+        BundleJsonNode bundle = BuildSearchBundle(ctx, aggregateQuery, matches, selfLink);
+
+        response = new()
+        {
+            Resource = bundle,
+            ResourceType = "Bundle",
+            Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, "System search successful"),
+            StatusCode = HttpStatusCode.OK,
+        };
+        return true;
     }
 
     /// <inheritdoc/>
@@ -2431,11 +2681,10 @@ public sealed class VersionedFhirStore : IFhirStore
             matches = matches.OrderBy(m => m, comparer).ToList();
         }
 
-        string selfLink = $"{GetBaseUrl(ctx)}/{ctx.CompartmentType}/{ctx.Id}/*";
-        if (!string.IsNullOrEmpty(searchQueryParams))
-        {
-            selfLink = selfLink + "?" + searchQueryParams.TrimStart('?');
-        }
+        string selfLink = BuildSelfLink(
+            $"{GetBaseUrl(ctx)}/{ctx.CompartmentType}/{ctx.Id}/*",
+            searchQueryParams,
+            [.. aggregateQuery.UnknownParameters, .. aggregateQuery.MalformedParameters.Select(p => p.Name)]);
 
         BundleJsonNode bundle = BuildSearchBundle(ctx, aggregateQuery, matches, selfLink);
 
@@ -2525,17 +2774,8 @@ public sealed class VersionedFhirStore : IFhirStore
 
         ParsedQuery query = _search.ParseQuery(ctx.ResourceType, searchQueryParams);
 
-        if (query.UnknownParameters.Count > 0 && EffectiveSearchHandling(ctx) == SearchParameterHandling.Strict)
+        if (TryBuildStrictSearchOutcome(ctx, query, out response))
         {
-            var issues = query.UnknownParameters
-                .Select(p => (StrictRuleCode.SearchUnknownParameter, $"Unknown search parameter '{p}' for this resource type.", OperationOutcomeJsonNode.IssueType.NotSupported))
-                .ToList();
-
-            response = new()
-            {
-                Outcome = SerializationUtils.BuildOutcomeForStrictRules(HttpStatusCode.BadRequest, issues, _config.FhirVersion),
-                StatusCode = HttpStatusCode.BadRequest,
-            };
             return false;
         }
 
@@ -2554,11 +2794,10 @@ public sealed class VersionedFhirStore : IFhirStore
             matches = matches.OrderBy(m => m, comparer).ToList();
         }
 
-        string selfLink = $"{GetBaseUrl(ctx)}/{ctx.CompartmentType}/{ctx.Id}/{ctx.ResourceType}";
-        if (!string.IsNullOrEmpty(searchQueryParams))
-        {
-            selfLink = selfLink + "?" + searchQueryParams.TrimStart('?');
-        }
+        string selfLink = BuildSelfLink(
+            $"{GetBaseUrl(ctx)}/{ctx.CompartmentType}/{ctx.Id}/{ctx.ResourceType}",
+            searchQueryParams,
+            [.. query.UnknownParameters, .. query.MalformedParameters.Select(p => p.Name)]);
 
         BundleJsonNode bundle = BuildSearchBundle(ctx, query, matches, selfLink);
 

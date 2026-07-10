@@ -140,6 +140,8 @@ public sealed class OpValidate : IFhirOperation
             });
         }
 
+        AppendIgnoredParameterIssues(bodyResource, outcome);
+
         opResponse = new()
         {
             StatusCode = HttpStatusCode.OK,
@@ -149,6 +151,34 @@ public sealed class OpValidate : IFhirOperation
             Id = outcome.Id,
         };
         return true;
+    }
+
+    /// <summary>Surfaces 'mode' and 'profile' Parameters-body parameters as Information issues -
+    /// both are accepted by the operation definition but ignored by this implementation, and callers
+    /// should be able to see that without reading the OperationDefinition.</summary>
+    private static void AppendIgnoredParameterIssues(ResourceJsonNode? bodyResource, OperationOutcomeJsonNode outcome)
+    {
+        if (bodyResource is null || bodyResource.ResourceType != "Parameters")
+        {
+            return;
+        }
+
+        ParametersJsonNode parameters = bodyResource is ParametersJsonNode typed
+            ? typed
+            : new ParametersJsonNode(bodyResource.MutableNode, bodyResource.FhirVersion);
+
+        foreach (string name in new[] { "mode", "profile" })
+        {
+            if (parameters.FindParameter(name) is not null)
+            {
+                outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+                {
+                    Severity = OperationOutcomeJsonNode.IssueSeverity.Information,
+                    Code = OperationOutcomeJsonNode.IssueType.Informational,
+                    Diagnostics = $"Parameter '{name}' is currently ignored by this $validate implementation.",
+                });
+            }
+        }
     }
 
     /// <summary>Extracts the embedded resource from the 'resource' parameter inside a Parameters wrapper,

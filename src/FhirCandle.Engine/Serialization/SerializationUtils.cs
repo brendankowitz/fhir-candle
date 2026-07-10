@@ -54,15 +54,32 @@ public static class SerializationUtils
                 : SummaryFilter.Apply(instance, schema, summaryFlag);
         return SniffFormat(format, "{") switch
         {
-            "json" => toSerialize.SerializeToString(pretty),
+            "json" => SerializeJson(toSerialize, pretty),
             "xml" => FhirXml.Serialize(toSerialize, schema, pretty),
-            _ => toSerialize.SerializeToString(pretty),
+            _ => SerializeJson(toSerialize, pretty),
         };
     }
 
+    // Ignixa's SerializeToString uses JavaScriptEncoder.Default, which escapes HTML-sensitive
+    // characters ('+' becomes +, '<' becomes <); the pre-migration (Firely) serializer
+    // emitted them raw, and stored test expectations depend on that.
+    private static readonly System.Text.Json.JsonSerializerOptions _relaxedJsonOptions = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    private static readonly System.Text.Json.JsonSerializerOptions _relaxedIndentedJsonOptions = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        WriteIndented = true,
+    };
+
+    private static string SerializeJson(ResourceJsonNode resource, bool pretty) =>
+        resource.MutableNode.ToJsonString(pretty ? _relaxedIndentedJsonOptions : _relaxedJsonOptions);
+
     public static OperationOutcomeJsonNode BuildOutcomeForRequest(
         HttpStatusCode sc, string message,
-        OperationOutcomeJsonNode.IssueType issueType = OperationOutcomeJsonNode.IssueType.Processing)
+        OperationOutcomeJsonNode.IssueType? issueType = null)
     {
         var oo = new OperationOutcomeJsonNode { Id = Guid.NewGuid().ToString() };
         var issue = new OperationOutcomeJsonNode.IssueComponent
@@ -70,9 +87,20 @@ public static class SerializationUtils
             Severity = ((int)sc >= 400)
                 ? OperationOutcomeJsonNode.IssueSeverity.Error
                 : OperationOutcomeJsonNode.IssueSeverity.Information,
-            Code = issueType,
+            Code = issueType ?? (sc == HttpStatusCode.NotFound
+                ? OperationOutcomeJsonNode.IssueType.NotFound
+                : OperationOutcomeJsonNode.IssueType.Processing),
             Diagnostics = $"{message} (HTTP {(int)sc}: {sc})",
         };
+
+        // Status-derived default mirrors the pre-migration builder, whose successful outcomes
+        // carried issue code "success" (an R5 IssueType code the Firely enum exposed for all
+        // versions); Ignixa's IssueType enum lacks it, so set the raw property.
+        if (issueType is null && (int)sc < 300)
+        {
+            issue.MutableNode["code"] = "success";
+        }
+
         oo.Issue.Add(issue);
         return oo;
     }

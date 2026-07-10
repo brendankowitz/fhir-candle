@@ -74,7 +74,7 @@ public static class FhirXml
                 continue;
             }
 
-            IType effectiveType = ResolveEffectiveType(child, actualName, schema);
+            IType effectiveType = ResolveEffectiveType(child, actualName, schema, type);
 
             IEnumerable<(JsonNode? Val, JsonNode? Shadow)> items = value is JsonArray arr
                 ? arr.Select((v, i) => (v, (shadow as JsonNode as JsonArray)?[i]))
@@ -154,7 +154,7 @@ public static class FhirXml
                 bool anyShadow = false;
                 foreach ((XElement elMatch, string actualName) in matches)
                 {
-                    (JsonNode? val, JsonObject? shadow) = ReadChild(elMatch, child, actualName, schema);
+                    (JsonNode? val, JsonObject? shadow) = ReadChild(elMatch, child, actualName, schema, type);
                     valueArr.Add(val);
                     shadowArr.Add(shadow);
                     if (shadow is not null) anyShadow = true;
@@ -165,7 +165,7 @@ public static class FhirXml
             else
             {
                 (XElement elMatch, string actualName) = matches[0];
-                (JsonNode? val, JsonObject? shadow) = ReadChild(elMatch, child, actualName, schema);
+                (JsonNode? val, JsonObject? shadow) = ReadChild(elMatch, child, actualName, schema, type);
                 obj[actualName] = val;
                 if (shadow is not null) obj["_" + actualName] = shadow;
             }
@@ -173,9 +173,9 @@ public static class FhirXml
     }
 
     private static (JsonNode? Value, JsonObject? Shadow) ReadChild(
-        XElement el, IType schemaChild, string actualName, IFhirSchemaProvider schema)
+        XElement el, IType schemaChild, string actualName, IFhirSchemaProvider schema, IType parent)
     {
-        IType effectiveType = ResolveEffectiveType(schemaChild, actualName, schema);
+        IType effectiveType = ResolveEffectiveType(schemaChild, actualName, schema, parent);
 
         if (effectiveType.Info.IsPrimitive)
         {
@@ -210,7 +210,7 @@ public static class FhirXml
     // elements (value[x], registered stripped of "[x]") additionally carry multiple candidate
     // Types entries; the one actually present is identified by matching its FHIR type code
     // against the suffix of the concrete element/property name (e.g. "valueQuantity" -> "Quantity").
-    private static IType ResolveEffectiveType(IType child, string actualName, IFhirSchemaProvider schema)
+    private static IType ResolveEffectiveType(IType child, string actualName, IFhirSchemaProvider schema, IType parent)
     {
         if (child is not ITypeExtended extended) return child;
 
@@ -225,6 +225,25 @@ public static class FhirXml
         else
         {
             typeName = extended.DefaultTypeName ?? extended.Types.FirstOrDefault()?.Code;
+        }
+
+        // Inline backbone elements (e.g. CapabilityStatement.rest) declare the bare
+        // "BackboneElement"/"Element" base type, which only carries id/extension children -
+        // their real structure lives on a parent-qualified nested type definition
+        // ("CapabilityStatement.Rest", case-insensitive lookup), resolved the same way Ignixa's
+        // SchemaAwareElement derives child instance types.
+        if (typeName is null or "BackboneElement" or "Element")
+        {
+            IType? qualified = schema.GetTypeDefinition($"{parent.Info.Name}.{child.Info.Name}");
+            if (qualified is not null)
+            {
+                return qualified;
+            }
+
+            if (child.Children.Any())
+            {
+                return child;
+            }
         }
 
         return (typeName is not null ? schema.GetTypeDefinition(typeName) : null) ?? child;
