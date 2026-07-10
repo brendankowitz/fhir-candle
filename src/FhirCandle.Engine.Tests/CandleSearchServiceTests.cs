@@ -88,4 +88,33 @@ public class CandleSearchServiceTests
 
         query.UnknownParameters.ShouldContain("bogusparam");
     }
+
+    [Fact]
+    public void TestForMatch_PlainReferenceParameter_MatchesTypeAndIdOrBareId()
+    {
+        const string observationWithSubjectJson = """
+            {
+              "resourceType": "Observation",
+              "id": "obs-2",
+              "status": "final",
+              "code": {"coding": [{"system": "http://loinc.org", "code": "8480-6"}]},
+              "subject": {"reference": "Patient/example"}
+            }
+            """;
+
+        CandleSearchService service = CreateService();
+        IElement observation = JsonSourceNodeFactory.Parse(observationWithSubjectJson).ToElement(R4);
+        IReadOnlyCollection<SearchIndexEntry> index = service.Index(observation);
+        var key = new ResourceKey("Observation", "obs-2");
+
+        ParsedQuery matching = service.ParseQuery("Observation", "subject=Patient/example");
+        matching.CustomFilters.ShouldHaveSingleItem().Modifier.ShouldBe("reference");
+        service.TestForMatch(key, index, matching, observation, (_, _, _) => false).ShouldBeTrue();
+
+        ParsedQuery typeModified = service.ParseQuery("Observation", "subject:Patient=example");
+        service.TestForMatch(key, index, typeModified, observation, (_, _, _) => false).ShouldBeTrue();
+
+        ParsedQuery nonMatching = service.ParseQuery("Observation", "subject=Patient/other");
+        service.TestForMatch(key, index, nonMatching, observation, (_, _, _) => false).ShouldBeFalse();
+    }
 }

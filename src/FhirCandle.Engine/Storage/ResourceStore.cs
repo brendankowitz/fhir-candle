@@ -7,6 +7,7 @@ using FhirCandle.Models;
 using FhirCandle.Search;
 using FhirCandle.Serialization;
 using Ignixa.Abstractions;
+using Ignixa.FhirPath.Evaluation;
 using Ignixa.Search.Indexing;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
@@ -17,6 +18,35 @@ using System.Net;
 using System.Text.Json.Nodes;
 
 namespace FhirCandle.Storage;
+
+/// <summary>Raised when a stored-resource change matches a subscription's topic triggers and
+/// filters. The owning store allocates the event number, resolves any additional-context
+/// resources, and forwards the event to its public subscription surface.</summary>
+public sealed class SubscriptionMatchedEventArgs : EventArgs
+{
+    /// <summary>Gets or initializes the matched subscription id.</summary>
+    public required string SubscriptionId { get; init; }
+
+    /// <summary>Gets or initializes the canonical URL of the matched topic.</summary>
+    public required string TopicUrl { get; init; }
+
+    /// <summary>Gets or initializes the focus resource of the event.</summary>
+    public required ResourceJsonNode Focus { get; init; }
+
+    /// <summary>Gets or initializes the topic's notification-shape include/revinclude query, for the
+    /// owner to resolve additional-context resources with.</summary>
+    public ParsedQuery? AdditionalContext { get; init; }
+}
+
+/// <summary>Raised when evaluating a subscription topic trigger throws.</summary>
+public sealed class SubscriptionTriggerErrorEventArgs : EventArgs
+{
+    /// <summary>Gets or initializes the affected subscription id.</summary>
+    public required string SubscriptionId { get; init; }
+
+    /// <summary>Gets or initializes the error message.</summary>
+    public required string Message { get; init; }
+}
 
 /// <summary>
 /// A resource store for a single resource type, over <see cref="ResourceJsonNode"/>.
@@ -42,6 +72,11 @@ public sealed class ResourceStore : IVersionedResourceStore
     private readonly IFhirSchemaProvider _schema;
     private readonly CandleSearchService _search;
     private readonly Func<string?, string?, string?, bool> _vsContains;
+    private readonly Func<string, IElement?> _resolveElement;
+
+    /// <summary>Executable subscription state, keyed by topic URL. Maintained by the owning store
+    /// via <see cref="SetExecutableSubscriptionTopic"/>/<see cref="SetExecutableSubscription"/>.</summary>
+    private readonly Dictionary<string, ExecutableSubscriptionInfo> _executableSubscriptions = [];
 
     private readonly bool _resourceHasUrl;
     private readonly bool _resourceHasIdentifier;
@@ -85,6 +120,25 @@ public sealed class ResourceStore : IVersionedResourceStore
     /// <summary>Occurs when a ValueSet is deleted.</summary>
     public event EventHandler<ResourceJsonNode>? OnValueSetRemoved;
 
+    /// <summary>Occurs when a SubscriptionTopic (or R4 Basic-wrapped topic) is created or updated.</summary>
+    public event EventHandler<ResourceJsonNode>? OnSubscriptionTopicChanged;
+
+    /// <summary>Occurs when a SubscriptionTopic (or R4 Basic-wrapped topic) is deleted.</summary>
+    public event EventHandler<ResourceJsonNode>? OnSubscriptionTopicRemoved;
+
+    /// <summary>Occurs when a Subscription is created or updated.</summary>
+    public event EventHandler<ResourceJsonNode>? OnSubscriptionChanged;
+
+    /// <summary>Occurs when a Subscription is deleted.</summary>
+    public event EventHandler<ResourceJsonNode>? OnSubscriptionRemoved;
+
+    /// <summary>Occurs when a resource change matches a subscription (topic triggers plus
+    /// subscription filters).</summary>
+    public event EventHandler<SubscriptionMatchedEventArgs>? OnSubscriptionEventMatched;
+
+    /// <summary>Occurs when a subscription topic trigger fails to evaluate.</summary>
+    public event EventHandler<SubscriptionTriggerErrorEventArgs>? OnSubscriptionTriggerError;
+
     /// <summary>Validates Basic-wrapped SubscriptionTopic and SubscriptionTopic resources. Unset until a
     /// later (Subscriptions) task wires in a real topic converter.</summary>
     public SpecialResourceValidator? SubscriptionTopicValidator { get; set; }
@@ -94,26 +148,31 @@ public sealed class ResourceStore : IVersionedResourceStore
     public SpecialResourceValidator? SubscriptionValidator { get; set; }
 
     /// <summary>Initializes a new instance of the <see cref="ResourceStore"/> class.</summary>
-    /// <param name="resourceType">Name of the FHIR resource type this store holds.</param>
-    /// <param name="schema">      The FHIR schema provider.</param>
-    /// <param name="search">      The shared search service.</param>
-    /// <param name="vsContains">  Callback used to test ValueSet membership for the <c>:in</c>/<c>:not-in</c>
+    /// <param name="resourceType">  Name of the FHIR resource type this store holds.</param>
+    /// <param name="schema">        The FHIR schema provider.</param>
+    /// <param name="search">        The shared search service.</param>
+    /// <param name="vsContains">    Callback used to test ValueSet membership for the <c>:in</c>/<c>:not-in</c>
     ///  search modifiers (see <see cref="CandleSearchService.TestForMatch"/>).</param>
+    /// <param name="resolveElement">Callback used as the FHIRPath <c>resolve()</c> hook when evaluating
+    ///  subscription topic triggers (returns null when the reference cannot be resolved).</param>
     public ResourceStore(
         string resourceType,
         IFhirSchemaProvider schema,
         CandleSearchService search,
-        Func<string?, string?, string?, bool> vsContains)
+        Func<string?, string?, string?, bool> vsContains,
+        Func<string, IElement?> resolveElement)
     {
         ArgumentNullException.ThrowIfNull(resourceType);
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(search);
         ArgumentNullException.ThrowIfNull(vsContains);
+        ArgumentNullException.ThrowIfNull(resolveElement);
 
         _resourceName = resourceType;
         _schema = schema;
         _search = search;
         _vsContains = vsContains;
+        _resolveElement = resolveElement;
 
         IType? typeDef = schema.GetTypeDefinition(resourceType);
         _resourceHasUrl = typeDef?.Children.Any(c => c.Info.Name == "url") ?? false;
@@ -238,6 +297,7 @@ public sealed class ResourceStore : IVersionedResourceStore
         RegisterInstanceCreated(source.Id);
 
         AddToSecondaryIndexes(source);
+        TestCreateAgainstSubscriptions(source);
         RunPostCrudSideEffects(source, isDelete: false);
 
         statusCode = HttpStatusCode.Created;
@@ -351,6 +411,16 @@ public sealed class ResourceStore : IVersionedResourceStore
         }
 
         AddToSecondaryIndexes(source);
+
+        if (previous is null)
+        {
+            TestCreateAgainstSubscriptions(source);
+        }
+        else
+        {
+            TestUpdateAgainstSubscriptions(source, previous);
+        }
+
         RunPostCrudSideEffects(source, isDelete: false);
 
         if (previous is null)
@@ -395,6 +465,7 @@ public sealed class ResourceStore : IVersionedResourceStore
         RegisterInstanceDeleted(id);
 
         RemoveFromSecondaryIndexes(previous);
+        TestDeleteAgainstSubscriptions(previous);
         RunPostCrudSideEffects(previous, isDelete: true);
 
         return previous;
@@ -434,6 +505,333 @@ public sealed class ResourceStore : IVersionedResourceStore
     /// <param name="resourceId">Identifier for the resource.</param>
     public void RegisterInstanceDeleted(string resourceId) =>
         OnInstanceDeleted?.Invoke(this, new() { ResourceType = _resourceName, ResourceId = resourceId });
+
+    /// <summary>Sets (or replaces) the executable trigger definitions for a subscription topic.</summary>
+    public void SetExecutableSubscriptionTopic(
+        string topicUrl,
+        IReadOnlyList<ExecutableSubscriptionInfo.InteractionOnlyTrigger> interactionTriggers,
+        IReadOnlyList<ExecutableSubscriptionInfo.FhirPathTrigger> fhirPathTriggers,
+        IReadOnlyList<ExecutableSubscriptionInfo.QueryTrigger> queryTriggers,
+        ParsedQuery? additionalContext)
+    {
+        if (!_executableSubscriptions.TryGetValue(topicUrl, out ExecutableSubscriptionInfo? executable))
+        {
+            executable = new() { TopicUrl = topicUrl };
+            _executableSubscriptions[topicUrl] = executable;
+        }
+
+        executable.InteractionTriggers = interactionTriggers;
+        executable.FhirPathTriggers = fhirPathTriggers;
+        executable.QueryTriggers = queryTriggers;
+        executable.AdditionalContext = additionalContext;
+    }
+
+    /// <summary>Sets (or replaces) a subscription's filters under a topic. A null
+    /// <paramref name="filters"/> means the subscription is unfiltered for this resource type.</summary>
+    public void SetExecutableSubscription(string topicUrl, string subscriptionId, ParsedQuery? filters)
+    {
+        if (!_executableSubscriptions.TryGetValue(topicUrl, out ExecutableSubscriptionInfo? executable))
+        {
+            executable = new() { TopicUrl = topicUrl };
+            _executableSubscriptions[topicUrl] = executable;
+        }
+
+        executable.FiltersBySubscription[subscriptionId] = filters;
+    }
+
+    /// <summary>Removes the executable state for a subscription topic.</summary>
+    public void RemoveExecutableSubscriptionTopic(string topicUrl) => _executableSubscriptions.Remove(topicUrl);
+
+    /// <summary>Removes one subscription's filters from under a topic.</summary>
+    public void RemoveExecutableSubscription(string topicUrl, string subscriptionId)
+    {
+        if (_executableSubscriptions.TryGetValue(topicUrl, out ExecutableSubscriptionInfo? executable))
+        {
+            executable.FiltersBySubscription.Remove(subscriptionId);
+        }
+    }
+
+    /// <summary>Tests a create interaction against all executable subscriptions.</summary>
+    public void TestCreateAgainstSubscriptions(ResourceJsonNode current)
+    {
+        if (_executableSubscriptions.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            IElement currentElement = current.ToElement(_schema);
+
+            EvaluationContext fpContext = new FhirEvaluationContext
+            {
+                Resource = currentElement,
+                RootResource = currentElement,
+                ElementResolver = _resolveElement,
+            }
+                .WithEnvironmentVariable("current", currentElement)
+                .WithEnvironmentVariable("previous", Array.Empty<IElement>());
+
+            PerformSubscriptionTest(current, currentElement, null, null, fpContext, ExecutableSubscriptionInfo.InteractionTypes.Create);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ResourceStore[{_resourceName}] <<< TestCreateAgainstSubscriptions caught: {ex.Message}");
+        }
+    }
+
+    /// <summary>Tests an update interaction against all executable subscriptions.</summary>
+    public void TestUpdateAgainstSubscriptions(ResourceJsonNode current, ResourceJsonNode previous)
+    {
+        if (_executableSubscriptions.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            IElement currentElement = current.ToElement(_schema);
+            IElement previousElement = previous.ToElement(_schema);
+
+            EvaluationContext fpContext = new FhirEvaluationContext
+            {
+                Resource = currentElement,
+                RootResource = currentElement,
+                ElementResolver = _resolveElement,
+            }
+                .WithEnvironmentVariable("current", currentElement)
+                .WithEnvironmentVariable("previous", previousElement);
+
+            PerformSubscriptionTest(current, currentElement, previous, previousElement, fpContext, ExecutableSubscriptionInfo.InteractionTypes.Update);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ResourceStore[{_resourceName}] <<< TestUpdateAgainstSubscriptions caught: {ex.Message}");
+        }
+    }
+
+    /// <summary>Tests a delete interaction against all executable subscriptions.</summary>
+    public void TestDeleteAgainstSubscriptions(ResourceJsonNode previous)
+    {
+        if (_executableSubscriptions.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            IElement previousElement = previous.ToElement(_schema);
+
+            EvaluationContext fpContext = new FhirEvaluationContext
+            {
+                Resource = previousElement,
+                RootResource = previousElement,
+                ElementResolver = _resolveElement,
+            }
+                .WithEnvironmentVariable("current", Array.Empty<IElement>())
+                .WithEnvironmentVariable("previous", previousElement);
+
+            PerformSubscriptionTest(null, null, previous, previousElement, fpContext, ExecutableSubscriptionInfo.InteractionTypes.Delete);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ResourceStore[{_resourceName}] <<< TestDeleteAgainstSubscriptions caught: {ex.Message}");
+        }
+    }
+
+    /// <summary>Evaluates every executable topic's triggers against a change, then every matched
+    /// topic's per-subscription filters, raising <see cref="OnSubscriptionEventMatched"/> once per
+    /// matched subscription and <see cref="OnSubscriptionTriggerError"/> for evaluation failures.</summary>
+    private void PerformSubscriptionTest(
+        ResourceJsonNode? current,
+        IElement? currentElement,
+        ResourceJsonNode? previous,
+        IElement? previousElement,
+        EvaluationContext fpContext,
+        ExecutableSubscriptionInfo.InteractionTypes interaction)
+    {
+        switch (interaction)
+        {
+            case ExecutableSubscriptionInfo.InteractionTypes.Create when currentElement is null:
+            case ExecutableSubscriptionInfo.InteractionTypes.Update when currentElement is null || previousElement is null:
+            case ExecutableSubscriptionInfo.InteractionTypes.Delete when previousElement is null:
+                return;
+        }
+
+        var matchedTopics = new List<string>();
+        var topicErrors = new Dictionary<string, List<string>>();
+
+        // computed lazily - only query triggers and subscription filters need indexes
+        IReadOnlyCollection<SearchIndexEntry>? currentIndex = null;
+        IReadOnlyCollection<SearchIndexEntry>? previousIndex = null;
+
+        IReadOnlyCollection<SearchIndexEntry> CurrentIndex() => currentIndex ??= _search.Index(currentElement!);
+        IReadOnlyCollection<SearchIndexEntry> PreviousIndex() => previousIndex ??= _search.Index(previousElement!);
+
+        bool TestQuery(ParsedQuery? query, ResourceJsonNode resource, IElement element, Func<IReadOnlyCollection<SearchIndexEntry>> index) =>
+            query is null ||
+            _search.TestForMatch(new ResourceKey(_resourceName, resource.Id), index(), query, element, _vsContains);
+
+        void RecordError(string topicUrl, string kind, Exception ex)
+        {
+            Console.WriteLine($"ResourceStore[{_resourceName}] <<< Error evaluating {kind} trigger for topic {topicUrl}: {ex.Message}");
+
+            if (!topicErrors.TryGetValue(topicUrl, out List<string>? errors))
+            {
+                errors = [];
+                topicErrors[topicUrl] = errors;
+            }
+
+            errors.Add(ex.InnerException is null
+                ? $"Error while evaluating {kind} trigger for topic {topicUrl} on resource {_resourceName}: {ex.Message}"
+                : $"Error while evaluating {kind} trigger for topic {topicUrl} on resource {_resourceName}: {ex.Message}:{ex.InnerException.Message}");
+        }
+
+        foreach ((string topicUrl, ExecutableSubscriptionInfo executable) in _executableSubscriptions)
+        {
+            // first, interaction-only triggers
+            bool matched = interaction switch
+            {
+                ExecutableSubscriptionInfo.InteractionTypes.Create => executable.InteractionTriggers.Any(t => t.OnCreate),
+                ExecutableSubscriptionInfo.InteractionTypes.Update => executable.InteractionTriggers.Any(t => t.OnUpdate),
+                ExecutableSubscriptionInfo.InteractionTypes.Delete => executable.InteractionTriggers.Any(t => t.OnDelete),
+                _ => false,
+            };
+
+            // second, FHIRPath triggers (evaluated against the focus with %current/%previous bound)
+            if (!matched)
+            {
+                foreach (ExecutableSubscriptionInfo.FhirPathTrigger trigger in executable.FhirPathTriggers)
+                {
+                    try
+                    {
+                        IElement? focus = currentElement ?? previousElement;
+
+                        if (focus is not null && focus.IsTrue(trigger.Expression, fpContext))
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        RecordError(topicUrl, "FhirPath", ex);
+                    }
+                }
+            }
+
+            // finally, query triggers against pre/post index snapshots
+            if (!matched)
+            {
+                foreach (ExecutableSubscriptionInfo.QueryTrigger trigger in executable.QueryTriggers)
+                {
+                    bool previousPassed;
+                    bool currentPassed;
+
+                    try
+                    {
+                        switch (interaction)
+                        {
+                            case ExecutableSubscriptionInfo.InteractionTypes.Create when trigger.OnCreate:
+                                previousPassed = trigger.CreateAutoPasses;
+                                currentPassed = TestQuery(trigger.CurrentTest, current!, currentElement!, CurrentIndex);
+                                break;
+
+                            case ExecutableSubscriptionInfo.InteractionTypes.Update when trigger.OnUpdate:
+                                previousPassed = TestQuery(trigger.PreviousTest, previous!, previousElement!, PreviousIndex);
+                                currentPassed = TestQuery(trigger.CurrentTest, current!, currentElement!, CurrentIndex);
+                                break;
+
+                            case ExecutableSubscriptionInfo.InteractionTypes.Delete when trigger.OnDelete:
+                                previousPassed = TestQuery(trigger.PreviousTest, previous!, previousElement!, PreviousIndex);
+                                currentPassed = trigger.DeleteAutoPasses;
+                                break;
+
+                            default:
+                                continue;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        RecordError(topicUrl, "Query", ex);
+                        continue;
+                    }
+
+                    if (trigger.RequireBothTests ? previousPassed && currentPassed : previousPassed || currentPassed)
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+
+            if (matched)
+            {
+                matchedTopics.Add(topicUrl);
+            }
+        }
+
+        ResourceJsonNode focusResource = current ?? previous!;
+        IElement focusElement = currentElement ?? previousElement!;
+        Func<IReadOnlyCollection<SearchIndexEntry>> focusIndex = currentElement is not null ? CurrentIndex : PreviousIndex;
+
+        var notifiedSubscriptions = new HashSet<string>();
+
+        foreach (string topicUrl in matchedTopics)
+        {
+            ExecutableSubscriptionInfo executable = _executableSubscriptions[topicUrl];
+
+            foreach ((string subscriptionId, ParsedQuery? filters) in executable.FiltersBySubscription)
+            {
+                if (!notifiedSubscriptions.Add(subscriptionId))
+                {
+                    continue;
+                }
+
+                bool filtersPass;
+                try
+                {
+                    filtersPass = TestQuery(filters, focusResource, focusElement, focusIndex);
+                }
+                catch (Exception ex)
+                {
+                    RecordError(topicUrl, "filter", ex);
+                    notifiedSubscriptions.Remove(subscriptionId);
+                    continue;
+                }
+
+                if (!filtersPass)
+                {
+                    notifiedSubscriptions.Remove(subscriptionId);
+                    continue;
+                }
+
+                OnSubscriptionEventMatched?.Invoke(this, new()
+                {
+                    SubscriptionId = subscriptionId,
+                    TopicUrl = topicUrl,
+                    Focus = focusResource,
+                    AdditionalContext = executable.AdditionalContext,
+                });
+            }
+        }
+
+        foreach ((string topicUrl, List<string> errors) in topicErrors)
+        {
+            if (!_executableSubscriptions.TryGetValue(topicUrl, out ExecutableSubscriptionInfo? executable))
+            {
+                continue;
+            }
+
+            foreach (string subscriptionId in executable.FiltersBySubscription.Keys)
+            {
+                foreach (string error in errors)
+                {
+                    OnSubscriptionTriggerError?.Invoke(this, new() { SubscriptionId = subscriptionId, Message = error });
+                }
+            }
+        }
+    }
 
     private (HttpStatusCode StatusCode, OperationOutcomeJsonNode Outcome)? ValidateSpecialCase(ResourceJsonNode source)
     {
@@ -580,6 +978,42 @@ public sealed class ResourceStore : IVersionedResourceStore
                 else
                 {
                     OnValueSetChanged?.Invoke(this, resource);
+                }
+                break;
+
+            case "SubscriptionTopic":
+                if (isDelete)
+                {
+                    OnSubscriptionTopicRemoved?.Invoke(this, resource);
+                }
+                else
+                {
+                    OnSubscriptionTopicChanged?.Invoke(this, resource);
+                }
+                break;
+
+            case "Basic":
+                if (GetBasicFhirType(resource) == "SubscriptionTopic")
+                {
+                    if (isDelete)
+                    {
+                        OnSubscriptionTopicRemoved?.Invoke(this, resource);
+                    }
+                    else
+                    {
+                        OnSubscriptionTopicChanged?.Invoke(this, resource);
+                    }
+                }
+                break;
+
+            case "Subscription":
+                if (isDelete)
+                {
+                    OnSubscriptionRemoved?.Invoke(this, resource);
+                }
+                else
+                {
+                    OnSubscriptionChanged?.Invoke(this, resource);
                 }
                 break;
         }

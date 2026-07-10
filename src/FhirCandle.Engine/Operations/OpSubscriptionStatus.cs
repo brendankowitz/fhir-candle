@@ -13,14 +13,9 @@ using Ignixa.Serialization.SourceNodes;
 namespace FhirCandle.Operations;
 
 /// <summary>
-/// Resource/instance-level Subscription <c>$status</c> operation.
-/// <para>
-/// <b>Placeholder</b>: the old file's status generation (<c>VersionedFhirStore._subscriptions</c>,
-/// <c>StatusForSubscription</c>) depends on live subscription/notification tracking that does not
-/// exist yet in the Ignixa-model engine - subscription execution is Task 14. This parses the
-/// <c>id</c>/<c>status</c> filters from the request (matching the old file's input shape) but returns
-/// a well-formed, empty searchset Bundle rather than applying them against real subscription state.
-/// </para>
+/// Resource/instance-level Subscription <c>$status</c> operation: returns a searchset Bundle of
+/// notification status resources for the requested subscriptions (all tracked subscriptions when no
+/// <c>id</c>/<c>status</c> filters are given).
 /// </summary>
 public sealed class OpSubscriptionStatus : IFhirOperation
 {
@@ -80,12 +75,93 @@ public sealed class OpSubscriptionStatus : IFhirOperation
         ResourceJsonNode? bodyResource,
         out FhirResponseContext opResponse)
     {
+        var subscriptionIds = new List<string>();
+        var statusFilters = new List<string>();
+
+        if (!string.IsNullOrEmpty(ctx.Id))
+        {
+            subscriptionIds.Add(ctx.Id);
+        }
+
+        if (!string.IsNullOrEmpty(ctx.UrlQuery))
+        {
+            System.Collections.Specialized.NameValueCollection query = System.Web.HttpUtility.ParseQueryString(ctx.UrlQuery);
+            foreach (string? key in query.AllKeys)
+            {
+                string value = key is null ? string.Empty : query[key] ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                switch (key)
+                {
+                    case "id":
+                        subscriptionIds.AddRange(value.Split(','));
+                        break;
+
+                    case "status":
+                        statusFilters.AddRange(value.Split(','));
+                        break;
+                }
+            }
+        }
+
+        if (bodyResource?.ResourceType == "Parameters" &&
+            bodyResource.MutableNode["parameter"] is JsonArray bodyParameters)
+        {
+            foreach (JsonObject parameter in bodyParameters.OfType<JsonObject>())
+            {
+                string name = parameter["name"]?.GetValue<string>() ?? string.Empty;
+                string value = parameter.FirstOrDefault(kvp => kvp.Key.StartsWith("value", StringComparison.Ordinal)).Value?.ToString() ?? string.Empty;
+
+                switch (name)
+                {
+                    case "id" when !string.IsNullOrEmpty(value):
+                        subscriptionIds.Add(value);
+                        break;
+
+                    case "status" when !string.IsNullOrEmpty(value):
+                        statusFilters.Add(value);
+                        break;
+                }
+            }
+        }
+
+        var filters = new HashSet<string>(statusFilters);
+
+        IEnumerable<string> candidateIds = subscriptionIds.Count != 0
+            ? subscriptionIds.Distinct()
+            : store.CurrentSubscriptions.Select(s => s.Id);
+
+        var entries = new JsonArray();
+
+        foreach (string id in candidateIds)
+        {
+            if (!store.TryGetParsedSubscription(id, out ParsedSubscription? subscription) ||
+                (filters.Count != 0 && !filters.Contains(subscription.CurrentStatus)))
+            {
+                continue;
+            }
+
+            ResourceJsonNode? status = store.StatusForSubscription(id, "query-status");
+            if (status is not null)
+            {
+                entries.Add(new JsonObject
+                {
+                    ["fullUrl"] = $"urn:uuid:{status.Id}",
+                    ["resource"] = status.MutableNode.DeepClone(),
+                });
+            }
+        }
+
         var bundle = new JsonObject
         {
             ["resourceType"] = "Bundle",
             ["id"] = Guid.NewGuid().ToString(),
             ["type"] = "searchset",
-            ["entry"] = new JsonArray(),
+            ["timestamp"] = DateTimeOffset.Now.ToString("o"),
+            ["entry"] = entries,
         };
 
         opResponse = new()
@@ -103,7 +179,7 @@ public sealed class OpSubscriptionStatus : IFhirOperation
         var parameters = new JsonArray(
             OperationDefinitionBuilder.Param("id", "in", 0, "*", "id", "One or more Subscription ids to get status for. In the absence of any, the server returns status for all Subscriptions available to the caller."),
             OperationDefinitionBuilder.Param("status", "in", 0, "*", "code", "A Subscription status to filter by (e.g., \"active\")."),
-            OperationDefinitionBuilder.Param("return", "out", 1, "1", "Bundle", "A searchset Bundle. This placeholder always returns an empty searchset - see Task 14 for real subscription-status population."));
+            OperationDefinitionBuilder.Param("return", "out", 1, "1", "Bundle", "A searchset Bundle of notification status resources for the matching subscriptions."));
 
         return OperationDefinitionBuilder.Build(this, fhirVersion, parameters);
     }

@@ -13,16 +13,9 @@ using Ignixa.Serialization.SourceNodes;
 namespace FhirCandle.Operations;
 
 /// <summary>
-/// Instance-level Subscription <c>$events</c> operation.
-/// <para>
-/// <b>Placeholder</b>: the old file answered from a live in-memory subscription/notification ledger
-/// (<c>VersionedFhirStore._subscriptions</c>, <c>BundleForSubscriptionEvents</c>) that does not exist
-/// yet in the Ignixa-model engine - subscription execution is Task 14. The instance-operation dispatch
-/// already guarantees the named Subscription exists (via <paramref name="focusResource"/> in
-/// <see cref="Storage.VersionedFhirStore.InstanceOperation"/>), so this returns a well-formed, empty
-/// history Bundle - the shape a real implementation would extend with actual notification-bundle
-/// entries once Task 14 lands.
-/// </para>
+/// Instance-level Subscription <c>$events</c> operation: builds a notification bundle covering the
+/// requested event-number range (or the full range when unspecified) from the tracked subscription's
+/// generated events.
 /// </summary>
 public sealed class OpSubscriptionEvents : IFhirOperation
 {
@@ -82,18 +75,97 @@ public sealed class OpSubscriptionEvents : IFhirOperation
         ResourceJsonNode? bodyResource,
         out FhirResponseContext opResponse)
     {
-        var bundle = new JsonObject
+        if (string.IsNullOrEmpty(ctx.Id) || !store.TryGetParsedSubscription(ctx.Id, out ParsedSubscription? subscription))
         {
-            ["resourceType"] = "Bundle",
-            ["id"] = Guid.NewGuid().ToString(),
-            ["type"] = "history",
-            ["entry"] = new JsonArray(),
-        };
+            opResponse = new()
+            {
+                StatusCode = HttpStatusCode.NotFound,
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.NotFound, $"Subscription {ctx.Id} was not found."),
+            };
+            return false;
+        }
+
+        string eventsSince = string.Empty;
+        string eventsUntil = string.Empty;
+        string contentLevel = string.Empty;
+
+        if (!string.IsNullOrEmpty(ctx.UrlQuery))
+        {
+            System.Collections.Specialized.NameValueCollection query = System.Web.HttpUtility.ParseQueryString(ctx.UrlQuery);
+            foreach (string? key in query.AllKeys)
+            {
+                string value = key is null ? string.Empty : query[key] ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                switch (key)
+                {
+                    case "events-since-number":
+                    case "eventssincenumber":
+                    case "eventsSinceNumber":
+                        eventsSince = value;
+                        break;
+
+                    case "events-until-number":
+                    case "eventsuntilnumber":
+                    case "eventsUntilNumber":
+                        eventsUntil = value;
+                        break;
+
+                    case "content":
+                        contentLevel = value;
+                        break;
+                }
+            }
+        }
+
+        if (bodyResource?.ResourceType == "Parameters" &&
+            bodyResource.MutableNode["parameter"] is JsonArray bodyParameters)
+        {
+            foreach (JsonObject parameter in bodyParameters.OfType<JsonObject>())
+            {
+                string name = parameter["name"]?.GetValue<string>() ?? string.Empty;
+                string value = parameter.FirstOrDefault(kvp => kvp.Key.StartsWith("value", StringComparison.Ordinal)).Value?.ToString() ?? string.Empty;
+
+                switch (name)
+                {
+                    case "eventsSinceNumber":
+                        eventsSince = value;
+                        break;
+
+                    case "eventsUntilNumber":
+                        eventsUntil = value;
+                        break;
+
+                    case "content":
+                        contentLevel = value;
+                        break;
+                }
+            }
+        }
+
+        if (!long.TryParse(eventsSince, out long sinceNumber))
+        {
+            sinceNumber = 0;
+        }
+
+        if (!long.TryParse(eventsUntil, out long untilNumber))
+        {
+            untilNumber = subscription.CurrentEventCount;
+        }
+
+        var eventNumbers = new List<long>();
+        for (long i = sinceNumber; i <= untilNumber; i++)
+        {
+            eventNumbers.Add(i);
+        }
 
         opResponse = new()
         {
             StatusCode = HttpStatusCode.OK,
-            Resource = JsonSourceNodeFactory.Parse((JsonNode)bundle),
+            Resource = store.BundleForSubscriptionEvents(ctx.Id, eventNumbers, "query-event", contentLevel),
             Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.OK, $"Events for subscription {ctx.Id}."),
         };
         return true;
@@ -106,7 +178,7 @@ public sealed class OpSubscriptionEvents : IFhirOperation
             OperationDefinitionBuilder.Param("eventsSinceNumber", "in", 0, "1", "integer64", "The starting event number, inclusive of this event (lower bound)."),
             OperationDefinitionBuilder.Param("eventsUntilNumber", "in", 0, "1", "integer64", "The ending event number, inclusive of this event (upper bound)."),
             OperationDefinitionBuilder.Param("content", "in", 0, "1", "code", "Requested content style of returned data (e.g., empty, id-only, full-resource). A hint only; MAY be ignored."),
-            OperationDefinitionBuilder.Param("return", "out", 1, "1", "Bundle", "A history Bundle. This placeholder always returns an empty history Bundle - see Task 14 for real event population."));
+            OperationDefinitionBuilder.Param("return", "out", 1, "1", "Bundle", "A notification Bundle covering the requested events."));
 
         return OperationDefinitionBuilder.Build(this, fhirVersion, parameters);
     }

@@ -11,6 +11,7 @@ using FhirCandle.Schema;
 using FhirCandle.Search;
 using FhirCandle.Serialization;
 using FhirCandle.Strict;
+using FhirCandle.Subscriptions;
 using FhirCandle.Utils;
 using Ignixa.Abstractions;
 using Ignixa.Search.Indexing;
@@ -43,6 +44,8 @@ public sealed class VersionedFhirStore : IFhirStore
 
     private readonly Dictionary<string, ResourceStore> _store = [];
     private readonly Dictionary<string, ParsedCompartment> _compartments = [];
+    private readonly ConcurrentDictionary<string, ParsedSubscriptionTopic> _topics = new();
+    private readonly ConcurrentDictionary<string, ParsedSubscription> _subscriptions = new();
     private readonly Dictionary<string, IFhirOperation> _operations = [];
     private readonly HashSet<string> _protectedResources = [];
     private readonly HashSet<string> _loadedDirectives = [];
@@ -54,6 +57,8 @@ public sealed class VersionedFhirStore : IFhirStore
     private IFhirSchemaProvider _schema = null!;
     private CandleSearchService _search = null!;
     private StoreTerminologyService _terminology = null!;
+    private TopicConverter _topicConverter = null!;
+    private SubscriptionConverter _subscriptionConverter = null!;
     private int _maxResourceCount;
     private bool _hasDisposed;
 
@@ -76,17 +81,16 @@ public sealed class VersionedFhirStore : IFhirStore
     /// <inheritdoc/>
     public event EventHandler<StoreInstanceEventArgs>? OnInstanceDeleted;
 
-    /// <summary>Declared to satisfy <see cref="IFhirStore"/>; subscription execution is not ported yet
-    /// (no topic/subscription converter exists in the new engine), so this is never raised.</summary>
+    /// <summary>Occurs when a Subscription is registered, updated, or removed.</summary>
     public event EventHandler<SubscriptionChangedEventArgs>? OnSubscriptionsChanged;
 
-    /// <summary>Declared to satisfy <see cref="IFhirStore"/>; never raised (see <see cref="OnSubscriptionsChanged"/>).</summary>
+    /// <summary>Occurs when a resource change matched a subscription and a notification event was generated.</summary>
     public event EventHandler<SubscriptionSendEventArgs>? OnSubscriptionSendEvent;
 
-    /// <summary>Declared to satisfy <see cref="IFhirStore"/>; never raised (see <see cref="OnSubscriptionsChanged"/>).</summary>
+    /// <summary>Occurs when the set of received (inbound) subscription notifications changes.</summary>
     public event EventHandler<ReceivedSubscriptionChangedEventArgs>? OnReceivedSubscriptionChanged;
 
-    /// <summary>Declared to satisfy <see cref="IFhirStore"/>; never raised (see <see cref="OnSubscriptionsChanged"/>).</summary>
+    /// <summary>Occurs when an inbound subscription notification is received via <c>$subscription-hook</c>.</summary>
     public event EventHandler<ReceivedSubscriptionEventArgs>? OnReceivedSubscriptionEvent;
 
     /// <summary>Gets the FHIR schema provider for this store's FHIR version.</summary>
@@ -142,6 +146,8 @@ public sealed class VersionedFhirStore : IFhirStore
         _schema = FhirSchemas.Get(config.FhirVersion);
         _search = new CandleSearchService(_schema, NullLoggerFactory.Instance);
         _terminology = new StoreTerminologyService(_schema);
+        _topicConverter = new TopicConverter(config.FhirVersion);
+        _subscriptionConverter = new SubscriptionConverter(config.FhirVersion, config.MaxSubscriptionExpirationMinutes);
 
         foreach (string resourceType in _schema.ResourceTypeNames)
         {
@@ -153,7 +159,7 @@ public sealed class VersionedFhirStore : IFhirStore
                     continue;
             }
 
-            var rs = new ResourceStore(resourceType, _schema, _search, _terminology.VsContains);
+            var rs = new ResourceStore(resourceType, _schema, _search, _terminology.VsContains, ResolveElement);
 
             rs.OnInstanceCreated += (_, e) => RegisterInstanceCreated(e.ResourceType, e.ResourceId);
             rs.OnInstanceUpdated += (_, e) => RegisterInstanceUpdated(e.ResourceType, e.ResourceId);
@@ -164,6 +170,25 @@ public sealed class VersionedFhirStore : IFhirStore
 
             rs.OnValueSetChanged += (_, resource) => _terminology.StoreProcessValueSet(resource.ToElement(_schema));
             rs.OnValueSetRemoved += (_, resource) => _terminology.StoreProcessValueSet(resource.ToElement(_schema), remove: true);
+
+            rs.OnSubscriptionTopicChanged += (_, resource) => ProcessSubscriptionTopicResource(resource, remove: false);
+            rs.OnSubscriptionTopicRemoved += (_, resource) => ProcessSubscriptionTopicResource(resource, remove: true);
+            rs.OnSubscriptionChanged += (_, resource) => ProcessSubscriptionResource(resource, remove: false);
+            rs.OnSubscriptionRemoved += (_, resource) => ProcessSubscriptionResource(resource, remove: true);
+            rs.OnSubscriptionEventMatched += (_, e) => RegisterSendEvent(e);
+            rs.OnSubscriptionTriggerError += (_, e) => RegisterError(e.SubscriptionId, e.Message);
+
+            switch (resourceType)
+            {
+                case "Basic":
+                case "SubscriptionTopic":
+                    rs.SubscriptionTopicValidator = ValidateSubscriptionTopicResource;
+                    break;
+
+                case "Subscription":
+                    rs.SubscriptionValidator = ValidateSubscriptionResource;
+                    break;
+            }
 
             _store.Add(resourceType, rs);
         }
@@ -2462,38 +2487,478 @@ public sealed class VersionedFhirStore : IFhirStore
         return true;
     }
 
-    /// <summary>Subscriptions are not ported yet (no topic/subscription converter exists); always empty.</summary>
-    public IEnumerable<ParsedSubscriptionTopic> CurrentTopics => [];
+    /// <inheritdoc/>
+    public IEnumerable<ParsedSubscriptionTopic> CurrentTopics => _topics.Values;
 
-    /// <summary>Subscriptions are not ported yet; always empty.</summary>
-    public IEnumerable<ParsedSubscription> CurrentSubscriptions => [];
+    /// <inheritdoc/>
+    public IEnumerable<ParsedSubscription> CurrentSubscriptions => _subscriptions.Values;
 
-    /// <summary>Subscriptions are not ported yet; always empty.</summary>
+    /// <inheritdoc/>
     public ConcurrentDictionary<string, List<ParsedSubscriptionStatus>> ReceivedNotifications { get; } = new();
 
-    /// <summary>Subscriptions are not ported yet; a no-op.</summary>
-    public void ChangeSubscriptionStatus(string id, string status)
+    /// <summary>Attempts to get the parsed (tracked) subscription for an id.</summary>
+    internal bool TryGetParsedSubscription(string subscriptionId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ParsedSubscription? subscription) =>
+        _subscriptions.TryGetValue(subscriptionId, out subscription);
+
+    private bool ValidateSubscriptionTopicResource(ResourceJsonNode source, out string? errorMessage)
     {
+        if (_topicConverter.TryParse(source, out _))
+        {
+            errorMessage = null;
+            return true;
+        }
+
+        errorMessage = source.ResourceType == "Basic"
+            ? "Basic-wrapped SubscriptionTopic could not be parsed!"
+            : "SubscriptionTopic could not be parsed!";
+        return false;
     }
 
-    /// <summary>Subscriptions are not ported yet; always fails.</summary>
+    private bool ValidateSubscriptionResource(ResourceJsonNode source, out string? errorMessage)
+    {
+        if (_subscriptionConverter.TryParse(source, out ParsedSubscription _))
+        {
+            errorMessage = null;
+            return true;
+        }
+
+        errorMessage = "Subscription could not be parsed!";
+        return false;
+    }
+
+    private void ProcessSubscriptionTopicResource(ResourceJsonNode resource, bool remove)
+    {
+        if (_topicConverter.TryParse(resource, out ParsedSubscriptionTopic topic))
+        {
+            _ = StoreProcessSubscriptionTopic(topic, remove);
+        }
+    }
+
+    private void ProcessSubscriptionResource(ResourceJsonNode resource, bool remove)
+    {
+        if (_subscriptionConverter.TryParse(resource, out ParsedSubscription subscription))
+        {
+            _ = StoreProcessSubscription(subscription, remove);
+        }
+    }
+
+    /// <summary>Registers (or removes) a subscription topic and rebuilds the executable trigger
+    /// definitions on every per-resource-type store it applies to. Returns true if the topic has at
+    /// least one executable trigger.</summary>
+    public bool StoreProcessSubscriptionTopic(ParsedSubscriptionTopic topic, bool remove = false)
+    {
+        if (remove)
+        {
+            if (!_topics.TryRemove(topic.Url, out _))
+            {
+                return false;
+            }
+
+            foreach (ResourceStore rs in _store.Values)
+            {
+                rs.RemoveExecutableSubscriptionTopic(topic.Url);
+            }
+
+            return true;
+        }
+
+        bool priorExisted = _topics.ContainsKey(topic.Url);
+        _topics[topic.Url] = topic;
+
+        if (topic.ResourceTriggers.Count == 0)
+        {
+            foreach (ResourceStore rs in _store.Values)
+            {
+                rs.RemoveExecutableSubscriptionTopic(topic.Url);
+            }
+
+            return false;
+        }
+
+        bool canExecute = false;
+
+        foreach ((string resourceName, ResourceStore rs) in _store)
+        {
+            if (!topic.ResourceTriggers.ContainsKey(resourceName))
+            {
+                if (priorExisted)
+                {
+                    rs.RemoveExecutableSubscriptionTopic(topic.Url);
+                }
+
+                continue;
+            }
+
+            var interactionTriggers = new List<ExecutableSubscriptionInfo.InteractionOnlyTrigger>();
+            var fhirPathTriggers = new List<ExecutableSubscriptionInfo.FhirPathTrigger>();
+            var queryTriggers = new List<ExecutableSubscriptionInfo.QueryTrigger>();
+            ParsedQuery? additionalContext = null;
+
+            foreach (string key in (string[])[resourceName, "*", "Resource"])
+            {
+                if (topic.ResourceTriggers.TryGetValue(key, out List<ParsedSubscriptionTopic.ResourceTrigger>? triggers))
+                {
+                    foreach (ParsedSubscriptionTopic.ResourceTrigger trigger in triggers)
+                    {
+                        bool onCreate = trigger.OnCreate;
+                        bool onUpdate = trigger.OnUpdate;
+                        bool onDelete = trigger.OnDelete;
+
+                        // not filled out means trigger on any interaction
+                        if (!onCreate && !onUpdate && !onDelete)
+                        {
+                            onCreate = true;
+                            onUpdate = true;
+                            onDelete = true;
+                        }
+
+                        // prefer FHIRPath if present
+                        if (!string.IsNullOrEmpty(trigger.FhirPathCriteria))
+                        {
+                            fhirPathTriggers.Add(new(onCreate, onUpdate, onDelete, trigger.FhirPathCriteria));
+                            continue;
+                        }
+
+                        if (!string.IsNullOrEmpty(trigger.QueryPrevious) || !string.IsNullOrEmpty(trigger.QueryCurrent))
+                        {
+                            queryTriggers.Add(new(
+                                onCreate,
+                                onUpdate,
+                                onDelete,
+                                string.IsNullOrEmpty(trigger.QueryPrevious) ? null : _search.ParseQuery(resourceName, trigger.QueryPrevious),
+                                trigger.CreateAutoFail,
+                                trigger.CreateAutoPass,
+                                string.IsNullOrEmpty(trigger.QueryCurrent) ? null : _search.ParseQuery(resourceName, trigger.QueryCurrent),
+                                trigger.DeleteAutoFail,
+                                trigger.DeleteAutoPass,
+                                trigger.RequireBothQueries));
+                            continue;
+                        }
+
+                        interactionTriggers.Add(new(onCreate, onUpdate, onDelete));
+                    }
+                }
+
+                if (additionalContext is null &&
+                    topic.NotificationShapes.TryGetValue(key, out List<ParsedSubscriptionTopic.NotificationShape>? shapes) &&
+                    shapes.Count != 0)
+                {
+                    // use the first matching shape, mirroring the old engine
+                    ParsedSubscriptionTopic.NotificationShape shape = shapes[0];
+                    string includeQuery = string.Join('&', (shape.Includes ?? []).Concat(shape.ReverseIncludes ?? []));
+
+                    if (!string.IsNullOrEmpty(includeQuery))
+                    {
+                        additionalContext = TryParseNotificationShapeQuery(resourceName, includeQuery);
+                    }
+                }
+            }
+
+            if (interactionTriggers.Count != 0 || fhirPathTriggers.Count != 0 || queryTriggers.Count != 0)
+            {
+                rs.SetExecutableSubscriptionTopic(topic.Url, interactionTriggers, fhirPathTriggers, queryTriggers, additionalContext);
+                canExecute = true;
+            }
+            else
+            {
+                rs.RemoveExecutableSubscriptionTopic(topic.Url);
+            }
+        }
+
+        // wire up any subscriptions that arrived before their topic (replaces the old engine's
+        // load-state reprocess queue)
+        foreach (ParsedSubscription pending in _subscriptions.Values.Where(s => s.TopicUrl == topic.Url))
+        {
+            _ = StoreProcessSubscription(pending);
+        }
+
+        return canExecute;
+    }
+
+    /// <summary>Parses a notification-shape include/revinclude query, tolerating segments the search
+    /// engine rejects (e.g. dotted <c>iterate=Patient.link</c> continuations, which the subscriptions
+    /// samples use but Ignixa's include parser does not accept) by dropping just those segments.</summary>
+    private ParsedQuery? TryParseNotificationShapeQuery(string resourceName, string queryString)
+    {
+        try
+        {
+            return _search.ParseQuery(resourceName, queryString);
+        }
+        catch (Exception)
+        {
+            var parseable = queryString.Split('&').Where(segment =>
+            {
+                try
+                {
+                    _ = _search.ParseQuery(resourceName, segment);
+                    return true;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }).ToList();
+
+            return parseable.Count == 0 ? null : _search.ParseQuery(resourceName, string.Join('&', parseable));
+        }
+    }
+
+    /// <summary>Registers (or removes) a subscription: records it in the tracked set and pushes its
+    /// per-resource-type filters into every store its topic triggers on. Returns false when the topic
+    /// is not (yet) known - the subscription stays tracked and is wired up if the topic arrives.</summary>
+    public bool StoreProcessSubscription(ParsedSubscription subscription, bool remove = false)
+    {
+        if (remove)
+        {
+            if (!_subscriptions.ContainsKey(subscription.Id))
+            {
+                return false;
+            }
+
+            foreach (ResourceStore rs in _store.Values)
+            {
+                rs.RemoveExecutableSubscription(subscription.TopicUrl, subscription.Id);
+            }
+
+            _ = _subscriptions.TryRemove(subscription.Id, out _);
+
+            RegisterSubscriptionsChanged(subscription, removed: true);
+            return true;
+        }
+
+        bool priorExisted = _subscriptions.TryGetValue(subscription.Id, out ParsedSubscription? prior);
+        string priorState = priorExisted ? prior!.CurrentStatus : "off";
+
+        _subscriptions[subscription.Id] = subscription;
+
+        if (!_topics.TryGetValue(subscription.TopicUrl, out ParsedSubscriptionTopic? topic))
+        {
+            return false;
+        }
+
+        foreach ((string resourceName, ResourceStore rs) in _store)
+        {
+            if (!topic.ResourceTriggers.ContainsKey(resourceName))
+            {
+                continue;
+            }
+
+            var filterSegments = new List<string>();
+
+            foreach (string key in (string[])[resourceName, "*", "Resource"])
+            {
+                if (!subscription.Filters.TryGetValue(key, out List<ParsedSubscription.SubscriptionFilter>? filters))
+                {
+                    continue;
+                }
+
+                foreach (ParsedSubscription.SubscriptionFilter filter in filters)
+                {
+                    string modifier = string.IsNullOrEmpty(filter.Modifier) ? string.Empty : ":" + filter.Modifier;
+                    filterSegments.Add($"{filter.Name}{modifier}={filter.Comparator}{filter.Value}");
+                }
+            }
+
+            rs.SetExecutableSubscription(
+                subscription.TopicUrl,
+                subscription.Id,
+                filterSegments.Count == 0 ? null : _search.ParseQuery(resourceName, string.Join('&', filterSegments)));
+        }
+
+        RegisterSubscriptionsChanged(subscription, removed: false, sendHandshake: priorState.Equals("off", StringComparison.Ordinal));
+        return true;
+    }
+
+    /// <summary>Raises <see cref="OnSubscriptionsChanged"/>.</summary>
+    public void RegisterSubscriptionsChanged(ParsedSubscription? subscription, bool removed = false, bool sendHandshake = false) =>
+        OnSubscriptionsChanged?.Invoke(this, new()
+        {
+            Tenant = _config,
+            ChangedSubscription = subscription,
+            RemovedSubscriptionId = removed ? subscription?.Id : null,
+            SendHandshake = sendHandshake,
+        });
+
+    /// <summary>Allocates the event number, resolves additional-context resources per the topic's
+    /// notification shape, records the event on the subscription, and raises
+    /// <see cref="OnSubscriptionSendEvent"/>.</summary>
+    private void RegisterSendEvent(SubscriptionMatchedEventArgs matched)
+    {
+        if (!_subscriptions.TryGetValue(matched.SubscriptionId, out ParsedSubscription? subscription))
+        {
+            return;
+        }
+
+        var additionalContext = new List<object>();
+
+        if (matched.AdditionalContext is not null)
+        {
+            var focusList = new List<ResourceJsonNode> { matched.Focus };
+            var addedIds = new HashSet<string> { $"{matched.Focus.ResourceType}/{matched.Focus.Id}" };
+
+            IEnumerable<ResourceJsonNode> inclusions = SearchExecutor
+                .ResolveIncludes(focusList, matched.AdditionalContext.Options.Include, GetStore, _search, _schema)
+                .Concat(SearchExecutor.ResolveRevIncludes(focusList, matched.AdditionalContext.Options.RevInclude, GetStore, _search, _schema));
+
+            additionalContext.AddRange(inclusions.Where(r => addedIds.Add($"{r.ResourceType}/{r.Id}")));
+        }
+
+        var subscriptionEvent = new SubscriptionEvent
+        {
+            SubscriptionId = matched.SubscriptionId,
+            TopicUrl = matched.TopicUrl,
+            EventNumber = subscription.IncrementEventCount(),
+            Focus = matched.Focus,
+            AdditionalContext = additionalContext,
+        };
+
+        subscription.RegisterEvent(subscriptionEvent);
+
+        OnSubscriptionSendEvent?.Invoke(this, new()
+        {
+            Tenant = _config,
+            Subscription = subscription,
+            NotificationEvents = [subscriptionEvent],
+            NotificationType = ParsedSubscription.NotificationTypeCodes.EventNotification,
+        });
+    }
+
+    /// <summary>Records a subscription error message.</summary>
+    public void RegisterError(string subscriptionId, string errorMessage)
+    {
+        if (_subscriptions.TryGetValue(subscriptionId, out ParsedSubscription? subscription))
+        {
+            subscription.RegisterError(errorMessage);
+        }
+    }
+
+    /// <summary>Gets (optionally incrementing) the event count for a subscription.</summary>
+    public long GetSubscriptionEventCount(string subscriptionId, bool increment)
+    {
+        if (!_subscriptions.TryGetValue(subscriptionId, out ParsedSubscription? subscription))
+        {
+            return 0;
+        }
+
+        return increment ? subscription.IncrementEventCount() : subscription.CurrentEventCount;
+    }
+
+    /// <inheritdoc/>
+    public void ChangeSubscriptionStatus(string id, string status)
+    {
+        if (!_subscriptions.TryGetValue(id, out ParsedSubscription? parsed))
+        {
+            return;
+        }
+
+        if (!_store.TryGetValue("Subscription", out ResourceStore? rs) ||
+            rs.InstanceRead(id) is not { } stored)
+        {
+            return;
+        }
+
+        _subscriptionConverter.UpdateResourceStatus(stored, status);
+        parsed.CurrentStatus = status;
+
+        RegisterSubscriptionsChanged(parsed);
+    }
+
+    /// <inheritdoc/>
     public bool TryGetSubscription(ParsedSubscription parsed, out object? subscription)
     {
+        if (_subscriptionConverter.TryParse(parsed, out ResourceJsonNode resource))
+        {
+            subscription = resource;
+            return true;
+        }
+
         subscription = null;
         return false;
     }
 
-    /// <summary>Subscriptions are not ported yet; always fails.</summary>
-    public bool TrySerializeToSubscription(ParsedSubscription subscriptionInfo, out string serialized, bool pretty, string destFormat = "")
+    /// <inheritdoc/>
+    public bool TrySerializeToSubscription(ParsedSubscription subscriptionInfo, out string serialized, bool pretty, string destFormat = "application/fhir+json")
     {
-        serialized = string.Empty;
-        return false;
+        if (!_subscriptionConverter.TryParse(subscriptionInfo, out ResourceJsonNode resource))
+        {
+            serialized = string.Empty;
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(destFormat))
+        {
+            destFormat = "application/fhir+json";
+        }
+
+        serialized = SerializationUtils.SerializeFhir(resource, _schema, destFormat, pretty);
+        return true;
     }
 
-    /// <summary>Subscriptions are not ported yet; always empty.</summary>
+    /// <inheritdoc/>
     public string SerializeSubscriptionEvents(
-        string subscriptionId, IEnumerable<long> eventNumbers, string notificationType, bool pretty, string contentType = "", string contentLevel = "") =>
-        string.Empty;
+        string subscriptionId, IEnumerable<long> eventNumbers, string notificationType, bool pretty, string contentType = "", string contentLevel = "")
+    {
+        if (!_subscriptions.TryGetValue(subscriptionId, out ParsedSubscription? subscription))
+        {
+            return string.Empty;
+        }
+
+        BundleJsonNode? bundle = _subscriptionConverter.BundleForSubscriptionEvents(
+            subscription, eventNumbers, notificationType, _config.BaseUrl, contentLevel);
+
+        return bundle is null
+            ? string.Empty
+            : SerializationUtils.SerializeFhir(
+                bundle,
+                _schema,
+                string.IsNullOrEmpty(contentType) ? subscription.ContentType : contentType,
+                pretty);
+    }
+
+    /// <summary>Builds the notification bundle for one or more of a subscription's events.</summary>
+    public BundleJsonNode? BundleForSubscriptionEvents(
+        string subscriptionId, IEnumerable<long> eventNumbers, string notificationType, string contentLevel = "") =>
+        _subscriptions.TryGetValue(subscriptionId, out ParsedSubscription? subscription)
+            ? _subscriptionConverter.BundleForSubscriptionEvents(subscription, eventNumbers, notificationType, _config.BaseUrl, contentLevel)
+            : null;
+
+    /// <summary>Builds the notification status resource for a subscription (Parameters on R4,
+    /// SubscriptionStatus on R4B/R5).</summary>
+    public ResourceJsonNode? StatusForSubscription(string subscriptionId, string notificationType) =>
+        _subscriptions.TryGetValue(subscriptionId, out ParsedSubscription? subscription)
+            ? _subscriptionConverter.StatusForSubscription(subscription, notificationType, _config.BaseUrl)
+            : null;
+
+    /// <summary>Parses an inbound notification bundle's first-entry status resource.</summary>
+    public ParsedSubscriptionStatus? ParseNotificationBundle(BundleJsonNode bundle) =>
+        bundle.Entry.FirstOrDefault()?.Resource is { } statusResource &&
+        _subscriptionConverter.TryParse(statusResource, bundle.Id, out ParsedSubscriptionStatus status)
+            ? status
+            : null;
+
+    /// <summary>Records an inbound notification and raises <see cref="OnReceivedSubscriptionEvent"/>.</summary>
+    public void RegisterReceivedNotification(string bundleId, ParsedSubscriptionStatus status)
+    {
+        List<ParsedSubscriptionStatus> notifications = ReceivedNotifications.GetOrAdd(status.SubscriptionReference, _ => []);
+        notifications.Add(status);
+
+        OnReceivedSubscriptionEvent?.Invoke(this, new()
+        {
+            Tenant = _config,
+            BundleId = bundleId,
+            Status = status,
+        });
+    }
+
+    /// <summary>Raises <see cref="OnReceivedSubscriptionChanged"/>.</summary>
+    public void RegisterReceivedSubscriptionChanged(string subscriptionReference, int cachedNotificationCount, bool removed) =>
+        OnReceivedSubscriptionChanged?.Invoke(this, new()
+        {
+            Tenant = _config,
+            SubscriptionReference = subscriptionReference,
+            CurrentBundleCount = cachedNotificationCount,
+            Removed = removed,
+        });
 
     /// <inheritdoc/>
     public List<(string ResourceName, string? Name, string? Code, string? Description, string? SearchType)> GetSearchParameters(string? resourceName)
@@ -2578,6 +3043,11 @@ public sealed class VersionedFhirStore : IFhirStore
         element = resource.ToElement(_schema);
         return true;
     }
+
+    /// <summary>Func-shaped adapter over <see cref="TryResolveAsElement"/> for FHIRPath
+    /// <c>resolve()</c> hooks (<see cref="Ignixa.FhirPath.Evaluation.FhirEvaluationContext.ElementResolver"/>).</summary>
+    private IElement? ResolveElement(string reference) =>
+        TryResolveAsElement(reference, out IElement? element) ? element : null;
 
     // IReadOnlyDictionary<string, IResourceStore> - delegates to the per-resource-type store dictionary.
 

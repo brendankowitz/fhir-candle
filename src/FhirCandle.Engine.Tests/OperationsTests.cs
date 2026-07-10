@@ -103,7 +103,7 @@ public class OperationsTests
               "id": "sub-1",
               "status": "active",
               "reason": "test",
-              "criteria": "Patient",
+              "criteria": "http://example.org/FHIR/SubscriptionTopic/test",
               "channel": { "type": "rest-hook", "endpoint": "http://example.org/hook" }
             }
             """);

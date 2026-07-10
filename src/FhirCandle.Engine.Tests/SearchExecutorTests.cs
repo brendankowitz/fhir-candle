@@ -40,8 +40,8 @@ public class SearchExecutorTests
 
         public Fixture()
         {
-            PatientStore = new ResourceStore("Patient", R4, Search, (_, _, _) => false);
-            ObservationStore = new ResourceStore("Observation", R4, Search, (_, _, _) => false);
+            PatientStore = new ResourceStore("Patient", R4, Search, (_, _, _) => false, _ => null);
+            ObservationStore = new ResourceStore("Observation", R4, Search, (_, _, _) => false, _ => null);
         }
 
         public ResourceStore? Resolve(string resourceType) => resourceType switch

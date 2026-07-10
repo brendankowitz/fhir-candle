@@ -20,7 +20,7 @@ public class ResourceStoreTests
     private static CandleSearchService CreateSearch() => new(R4, NullLoggerFactory.Instance);
 
     private static ResourceStore CreateStore(string resourceType, CandleSearchService search) =>
-        new(resourceType, R4, search, (_, _, _) => false);
+        new(resourceType, R4, search, (_, _, _) => false, _ => null);
 
     private static FhirRequestContext Ctx() => new()
     {

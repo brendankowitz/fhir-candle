@@ -14,15 +14,8 @@ namespace FhirCandle.Operations;
 
 /// <summary>
 /// System-level <c>$subscription-hook</c> operation: receives a Subscription notification Bundle
-/// posted by another server this store is subscribed against.
-/// <para>
-/// <b>Placeholder</b>: the old file parsed the notification's <c>SubscriptionStatus</c>/
-/// <c>Parameters</c> first entry and registered it against live subscription tracking
-/// (<c>ParseNotificationBundle</c>, <c>RegisterReceivedNotification</c>) that does not exist yet in the
-/// Ignixa-model engine - subscription execution is Task 14. This validates only the basic
-/// notification-bundle shape (a Bundle with at least one entry) and always acknowledges receipt; it
-/// does not parse the status content or register the notification anywhere yet.
-/// </para>
+/// posted by another server this store is subscribed against, parses its first-entry status resource,
+/// stores the bundle, and registers the received notification.
 /// </summary>
 public sealed class OpSubscriptionHook : IFhirOperation
 {
@@ -98,6 +91,46 @@ public sealed class OpSubscriptionHook : IFhirOperation
             };
             return false;
         }
+
+        if (string.IsNullOrEmpty(bundle.Id))
+        {
+            bundle.Id = Guid.NewGuid().ToString();
+        }
+
+        FhirCandle.Models.ParsedSubscriptionStatus? status = store.ParseNotificationBundle(bundle);
+
+        if (status is null)
+        {
+            opResponse = new()
+            {
+                StatusCode = HttpStatusCode.UnprocessableEntity,
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Posted content is not a valid Subscription notification bundle", OperationOutcomeJsonNode.IssueType.Structure),
+            };
+            return false;
+        }
+
+        // persist the notification bundle so it can be inspected later; a duplicate id surfaces the
+        // store's conflict response and must not register a second received notification
+        ResourceJsonNode? stored = null;
+        HttpStatusCode createStatus = HttpStatusCode.InternalServerError;
+        OperationOutcomeJsonNode? createOutcome = null;
+
+        if (store.GetStore("Bundle") is { } bundleStore)
+        {
+            stored = bundleStore.InstanceCreate(ctx, bundle, allowExistingId: true, out createStatus, out createOutcome);
+        }
+
+        if (stored is null)
+        {
+            opResponse = new()
+            {
+                StatusCode = createStatus,
+                Outcome = createOutcome ?? SerializationUtils.BuildOutcomeForRequest(createStatus, "Failed to store notification bundle"),
+            };
+            return false;
+        }
+
+        store.RegisterReceivedNotification(stored.Id, status);
 
         opResponse = new()
         {
