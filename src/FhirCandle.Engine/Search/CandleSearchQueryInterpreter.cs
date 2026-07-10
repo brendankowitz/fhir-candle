@@ -43,6 +43,15 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
             return input => input.Where(x => MatchesResourceType(expression.Expression, x.Location.ResourceType));
         }
 
+        // _id is intrinsic to ResourceKey rather than FHIRPath-derived, so - unlike ordinary search
+        // parameters - it never gets a SearchIndexEntry; match Parameter.Code rather than Name since
+        // Ignixa gives this parameter's Name a synthetic value ("ID-SEARCH-PARAMETER") distinct from
+        // its code ("_id").
+        if (expression.Parameter.Code == "_id")
+        {
+            return input => input.Where(x => MatchesId(expression.Expression, x.Location.Id));
+        }
+
         // Token :not compiles to Not(equality) inside the parameter expression; FHIR semantics
         // require "no entry matches" (including resources without the parameter), not "any entry
         // that differs", so negate the whole existence check.
@@ -295,6 +304,21 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
                 multiary.Expressions.All(x => MatchesResourceType(x, resourceType)),
             UnionExpression union => union.Expressions.Any(x => MatchesResourceType(x, resourceType)),
             _ => throw new SearchOperationNotSupportedException($"{expression.GetType().Name} is not supported for _type."),
+        };
+
+    private static bool MatchesId(Expression expression, string resourceId) =>
+        expression switch
+        {
+            StringExpression str => string.Equals(
+                resourceId,
+                str.Value,
+                str.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal),
+            MultiaryExpression { MultiaryOperation: MultiaryOperator.Or } multiary =>
+                multiary.Expressions.Any(x => MatchesId(x, resourceId)),
+            MultiaryExpression { MultiaryOperation: MultiaryOperator.And } multiary =>
+                multiary.Expressions.All(x => MatchesId(x, resourceId)),
+            UnionExpression union => union.Expressions.Any(x => MatchesId(x, resourceId)),
+            _ => throw new SearchOperationNotSupportedException($"{expression.GetType().Name} is not supported for _id."),
         };
 
     /// <summary>

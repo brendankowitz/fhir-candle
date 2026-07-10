@@ -1,3 +1,4 @@
+using System.Globalization;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.Search.Definition;
@@ -48,7 +49,28 @@ public sealed class CandleSearchService
 
     public SearchParameterDefinitionManager Definitions { get; }
 
-    public IReadOnlyCollection<SearchIndexEntry> Index(IElement resource) => _indexer.Extract(resource);
+    /// <summary>
+    /// Extracts the FHIRPath-derived search index, plus a synthetic <c>_lastUpdated</c> entry from
+    /// <c>Resource.meta.lastUpdated</c>. Ignixa's indexer deliberately does not extract <c>_lastUpdated</c>
+    /// (mirroring its SQL datalayer, which bypasses the index tables and reads the intrinsic column
+    /// directly) - since this in-memory search has no equivalent direct-column path, and
+    /// <see cref="ResourceKey"/> carries no last-updated field for <see cref="CandleSearchQueryInterpreter"/>
+    /// to bypass onto (unlike <c>_id</c>, which maps onto <see cref="ResourceKey.Id"/>), a synthetic entry
+    /// is added here instead so <c>_lastUpdated</c> flows through the ordinary indexed-date matching path.
+    /// </summary>
+    public IReadOnlyCollection<SearchIndexEntry> Index(IElement resource)
+    {
+        List<SearchIndexEntry> entries = [.. _indexer.Extract(resource)];
+
+        if (resource.FirstChild("meta")?.FirstChild("lastUpdated")?.Value is string lastUpdated &&
+            DateTimeOffset.TryParse(lastUpdated, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset parsedLastUpdated) &&
+            Definitions.TryGetSearchParameter(resource.InstanceType, "_lastUpdated", out SearchParameterInfo lastUpdatedParameter))
+        {
+            entries.Add(new SearchIndexEntry(lastUpdatedParameter, new DateTimeSearchValue(parsedLastUpdated)));
+        }
+
+        return entries;
+    }
 
     public ParsedQuery ParseQuery(string? resourceType, string queryString)
     {
