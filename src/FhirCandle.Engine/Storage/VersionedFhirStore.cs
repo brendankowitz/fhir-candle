@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
 using FhirCandle.Compartments;
+using FhirCandle.InteractionHooks;
 using FhirCandle.Models;
 using FhirCandle.Operations;
 using FhirCandle.Schema;
@@ -47,6 +48,8 @@ public sealed class VersionedFhirStore : IFhirStore
     private readonly ConcurrentDictionary<string, ParsedSubscriptionTopic> _topics = new();
     private readonly ConcurrentDictionary<string, ParsedSubscription> _subscriptions = new();
     private readonly Dictionary<string, IFhirOperation> _operations = [];
+    private readonly Dictionary<string, Dictionary<Common.StoreInteractionCodes, IFhirInteractionHook[]>> _hooksByInteractionByResource = [];
+    private readonly HashSet<string> _registeredHookIds = [];
     private readonly HashSet<string> _protectedResources = [];
     private readonly HashSet<string> _loadedDirectives = [];
     private readonly HashSet<string> _loadedPackageIds = [];
@@ -202,6 +205,7 @@ public sealed class VersionedFhirStore : IFhirStore
         }
 
         RegisterEligibleOperations();
+        RegisterEligibleHooks();
 
         if (config.LoadDirectory is not null)
         {
@@ -232,6 +236,16 @@ public sealed class VersionedFhirStore : IFhirStore
         new OpSubscriptionHook(),
         new OpSubscriptionEvents(),
         new OpSubscriptionStatus(),
+        new OpPasClaimInquiry(),
+        new OpPasClaimSubmit(),
+    ];
+
+    /// <summary>Every <see cref="IFhirInteractionHook"/> implementation in this assembly, as an
+    /// explicit list for the same reasons as <see cref="_knownOperations"/> (fixed, known,
+    /// same-assembly set - reflection buys nothing and is trimming/AOT-hostile).</summary>
+    private static readonly IFhirInteractionHook[] _knownHooks =
+    [
+        new CDexTaskProcess(),
     ];
 
     /// <summary>(Re-)registers every <see cref="_knownOperations"/> entry applicable to this store's FHIR
@@ -264,6 +278,105 @@ public sealed class VersionedFhirStore : IFhirStore
 
             _operations[fhirOp.OperationName] = fhirOp;
         }
+    }
+
+    /// <summary>(Re-)registers every <see cref="_knownHooks"/> entry eligible for this store's FHIR
+    /// version, keyed by resource type and interaction code. Same gating and call sites as
+    /// <see cref="RegisterEligibleOperations"/>: called from <see cref="Init"/> and again at the end of
+    /// <see cref="LoadPackage"/>, because a hook's <see cref="IFhirInteractionHook.RequiresPackage"/>
+    /// gate only becomes satisfiable once its package has loaded. Unlike the old (Firely-based) file's
+    /// <c>DiscoverInteractionHooks</c>, no wildcard (<c>*</c>/<c>Resource</c>) registration is
+    /// supported - no existing hook targets all resource types.</summary>
+    private void RegisterEligibleHooks()
+    {
+        foreach (IFhirInteractionHook hook in _knownHooks)
+        {
+            if (hook.SupportedFhirVersions.Count != 0 && !hook.SupportedFhirVersions.Contains(_config.FhirVersion))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(hook.RequiresPackage) &&
+                !_loadedDirectives.Contains(hook.RequiresPackage) &&
+                !_loadedPackageIds.Contains(hook.RequiresPackage))
+            {
+                continue;
+            }
+
+            if (!_registeredHookIds.Add(hook.Id))
+            {
+                continue;
+            }
+
+            foreach ((string resourceType, HashSet<Common.StoreInteractionCodes> interactions) in hook.InteractionsByResource)
+            {
+                if (!_hooksByInteractionByResource.TryGetValue(resourceType, out Dictionary<Common.StoreInteractionCodes, IFhirInteractionHook[]>? hooksByInteraction))
+                {
+                    hooksByInteraction = [];
+                    _hooksByInteractionByResource.Add(resourceType, hooksByInteraction);
+                }
+
+                foreach (Common.StoreInteractionCodes interaction in interactions)
+                {
+                    hooksByInteraction[interaction] = hooksByInteraction.TryGetValue(interaction, out IFhirInteractionHook[]? hooks)
+                        ? [.. hooks, hook]
+                        : [hook];
+                }
+            }
+        }
+    }
+
+    /// <summary>Gets the registered hooks for a resource type and interaction, or an empty array.</summary>
+    private IFhirInteractionHook[] GetHooks(string resourceType, Common.StoreInteractionCodes interaction) =>
+        _hooksByInteractionByResource.TryGetValue(resourceType, out Dictionary<Common.StoreInteractionCodes, IFhirInteractionHook[]>? hooksByInteraction) &&
+        hooksByInteraction.TryGetValue(interaction, out IFhirInteractionHook[]? hooks)
+            ? hooks
+            : [];
+
+    /// <summary>Runs the Post-phase interaction hooks registered for <paramref name="resourceType"/>/
+    /// <paramref name="interaction"/> against a deep copy of <paramref name="stored"/> (hooks must not
+    /// mutate the store-held instance directly - they persist changes via their own store calls, per
+    /// the old file's <c>DeepCopy</c> behavior). Returns true when a hook completed the request itself
+    /// (set a StatusCode), with <paramref name="hookResponse"/> as the response to use; otherwise false,
+    /// with <paramref name="stored"/> replaced if a hook substituted the resource. Only the Post phase
+    /// is wired: the single existing hook (<see cref="CDexTaskProcess"/>) is Post-only, and only fires
+    /// on Task create/update - wiring the old file's full pre/post matrix across every interaction
+    /// would be speculative.</summary>
+    private bool TryRunPostHooks(
+        FhirRequestContext ctx,
+        ResourceStore rs,
+        string resourceType,
+        Common.StoreInteractionCodes interaction,
+        ref ResourceJsonNode stored,
+        out FhirResponseContext hookResponse)
+    {
+        foreach (IFhirInteractionHook hook in GetHooks(resourceType, interaction))
+        {
+            if (!hook.Enabled || !hook.HookRequestStates.Contains(Common.HookRequestStateCodes.Post))
+            {
+                continue;
+            }
+
+            ResourceJsonNode forHook = JsonSourceNodeFactory.Parse((JsonNode)stored.MutableNode.DeepClone());
+
+            _ = hook.DoInteractionHook(ctx, this, rs, forHook, out FhirResponseContext hr);
+
+            // a status code means the hook completed processing itself
+            if (hr.StatusCode is not null)
+            {
+                hookResponse = hr;
+                return true;
+            }
+
+            // if the hook substituted the resource, use that moving forward
+            if (hr.Resource is ResourceJsonNode replaced)
+            {
+                stored = replaced;
+            }
+        }
+
+        hookResponse = new();
+        return false;
     }
 
     /// <summary>Deletes every non-protected resource; when <paramref name="keepConformance"/> is true,
@@ -334,6 +447,7 @@ public sealed class VersionedFhirStore : IFhirStore
         }
 
         RegisterEligibleOperations();
+        RegisterEligibleHooks();
     }
 
     /// <summary>Parses a single resource file and stores it (update-as-create), honoring
@@ -598,6 +712,22 @@ public sealed class VersionedFhirStore : IFhirStore
             response = new() { Outcome = createOutcome, StatusCode = createStatusCode };
             return false;
         }
+
+        ResourceJsonNode storedResource = stored;
+
+        if (TryRunPostHooks(
+            ctx,
+            rs,
+            resourceType,
+            isConditionalCreate ? Common.StoreInteractionCodes.TypeCreateConditional : Common.StoreInteractionCodes.TypeCreate,
+            ref storedResource,
+            out FhirResponseContext hookResponse))
+        {
+            response = hookResponse;
+            return true;
+        }
+
+        stored = storedResource;
 
         if (_maxResourceCount > 0)
         {
@@ -883,6 +1013,24 @@ public sealed class VersionedFhirStore : IFhirStore
             response = new() { Outcome = outcome, StatusCode = sc };
             return false;
         }
+
+        ResourceJsonNode storedResource = stored;
+
+        if (TryRunPostHooks(
+            ctx,
+            rs,
+            resourceType,
+            ctx.Interaction == Common.StoreInteractionCodes.InstanceUpdateConditional
+                ? Common.StoreInteractionCodes.InstanceUpdateConditional
+                : Common.StoreInteractionCodes.InstanceUpdate,
+            ref storedResource,
+            out FhirResponseContext hookResponse))
+        {
+            response = hookResponse;
+            return true;
+        }
+
+        stored = storedResource;
 
         response = new()
         {
