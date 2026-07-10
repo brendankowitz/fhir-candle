@@ -8,7 +8,6 @@ using Ignixa.Search.Indexing.SearchValues;
 using Ignixa.Search.InMemory;
 using Ignixa.Search.Models;
 using Ignixa.Search.Parsing;
-using Ignixa.Specification.ValueSets.Normative;
 using Microsoft.Extensions.Logging;
 
 namespace FhirCandle.Search;
@@ -68,10 +67,6 @@ public sealed class CandleSearchService
             {
                 customFilters.Add(new CustomModifierFilter(code, modifier, parameter.Value));
             }
-            else if (TryExtractReferenceFilter(resourceType, parameter.Name, parameter.Value, out CustomModifierFilter? referenceFilter))
-            {
-                customFilters.Add(referenceFilter);
-            }
             else if (IsChainedOrHasParameter(parameter.Name))
             {
                 try
@@ -109,7 +104,7 @@ public sealed class CandleSearchService
     public SearchPredicate CompilePredicate(ParsedQuery query) =>
         query.Options.Expression is null
             ? input => input
-            : query.Options.Expression.AcceptVisitor(new SearchQueryInterpreter(), default);
+            : query.Options.Expression.AcceptVisitor(new CandleSearchQueryInterpreter(), default);
 
     public bool TestForMatch(
         ResourceKey key,
@@ -164,84 +159,9 @@ public sealed class CandleSearchService
             case "identifier":
                 return MatchesIdentifier(query.Options.ResourceType, filter, resource);
 
-            case "reference":
-                return index
-                    .Where(entry => string.Equals(entry.SearchParameter.Code, filter.Code, StringComparison.OrdinalIgnoreCase))
-                    .Select(entry => entry.Value as ReferenceSearchValue)
-                    .OfType<ReferenceSearchValue>()
-                    .Any(reference => MatchesReference(reference, filter.Value));
-
             default:
                 throw new NotSupportedException($"Unsupported custom search modifier '{filter.Modifier}'.");
         }
-    }
-
-    /// <summary>
-    /// Intercepts plain reference-parameter searches (e.g. <c>patient=Patient/example</c>, including
-    /// the <c>subject:Patient=example</c> type-modifier form). Ignixa's in-memory interpreter has no
-    /// reference comparison (its string comparison throws on Reference-typed index entries), so these
-    /// are evaluated against <see cref="ReferenceSearchValue"/> index entries instead, like the other
-    /// custom filters.
-    /// </summary>
-    private bool TryExtractReferenceFilter(
-        string? resourceType,
-        string parameterName,
-        string value,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out CustomModifierFilter? filter)
-    {
-        filter = null;
-
-        if (resourceType is null || string.IsNullOrEmpty(value))
-        {
-            return false;
-        }
-
-        string code = parameterName;
-        string typeModifier = string.Empty;
-
-        int colonIndex = parameterName.IndexOf(':');
-        if (colonIndex > 0)
-        {
-            typeModifier = parameterName[(colonIndex + 1)..];
-            code = parameterName[..colonIndex];
-
-            // only a resource-type modifier keeps reference semantics; anything else (e.g. :missing)
-            // stays on Ignixa's own parsing path
-            if (!_schema.ResourceTypeNames.Contains(typeModifier))
-            {
-                return false;
-            }
-        }
-
-        if (!Definitions.TryGetSearchParameter(resourceType, code, out SearchParameterInfo parameter) ||
-            parameter.Type != SearchParamType.Reference)
-        {
-            return false;
-        }
-
-        string filterValue = !string.IsNullOrEmpty(typeModifier) && !value.Contains('/')
-            ? $"{typeModifier}/{value}"
-            : value;
-
-        filter = new CustomModifierFilter(code, "reference", filterValue);
-        return true;
-    }
-
-    private static bool MatchesReference(ReferenceSearchValue reference, string value)
-    {
-        string typeAndId = string.IsNullOrEmpty(reference.ResourceType)
-            ? reference.ResourceId
-            : $"{reference.ResourceType}/{reference.ResourceId}";
-
-        if (value.Contains("://", StringComparison.Ordinal))
-        {
-            return string.Equals(value, reference.ToString(), StringComparison.Ordinal) ||
-                value.EndsWith("/" + typeAndId, StringComparison.Ordinal);
-        }
-
-        return value.Contains('/')
-            ? string.Equals(typeAndId, value, StringComparison.Ordinal)
-            : string.Equals(reference.ResourceId, value, StringComparison.Ordinal);
     }
 
     private bool MatchesIdentifier(string? resourceType, CustomModifierFilter filter, IElement resource)

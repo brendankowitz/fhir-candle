@@ -10,9 +10,9 @@ using Ignixa.Serialization.SourceNodes;
 namespace FhirCandle.Search;
 
 /// <summary>
-/// Evaluates the search extras Ignixa's <see cref="SearchQueryInterpreter"/> deliberately does not
-/// implement (it throws <c>SearchOperationNotSupportedException</c>/<c>NotImplementedException</c> for
-/// <c>_include</c>, <c>_revinclude</c>, and chained expressions) - these require walking across stores,
+/// Evaluates the search extras <see cref="CandleSearchQueryInterpreter"/> deliberately does not
+/// implement (it throws <c>SearchOperationNotSupportedException</c> for <c>_include</c>,
+/// <c>_revinclude</c>, and chained expressions) - these require walking across stores,
 /// which only candle's storage layer, not Ignixa's search library, knows how to do.
 /// </summary>
 /// <remarks>
@@ -259,7 +259,7 @@ public static class SearchExecutor
     /// <summary>
     /// Tests a chain's inner expression against a resolved resource - recursing via
     /// <see cref="EvaluateChained"/> for multi-level chains, or compiling a leaf predicate via
-    /// <see cref="SearchQueryInterpreter"/> otherwise.
+    /// <see cref="CandleSearchQueryInterpreter"/> otherwise.
     /// </summary>
     private static bool MatchesSubExpression(
         Expression expression,
@@ -273,7 +273,7 @@ public static class SearchExecutor
             return EvaluateChained(nested, resource, storeResolver, search, schema);
         }
 
-        SearchPredicate predicate = expression.AcceptVisitor(new SearchQueryInterpreter(), default);
+        SearchPredicate predicate = expression.AcceptVisitor(new CandleSearchQueryInterpreter(), default);
         var key = new ResourceKey(resource.ResourceType, resource.Id);
         var corpus = new[] { (key, search.Index(resource.ToElement(schema))) };
         return predicate(corpus).Any();

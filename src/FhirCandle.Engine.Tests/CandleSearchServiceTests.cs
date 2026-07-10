@@ -108,7 +108,8 @@ public class CandleSearchServiceTests
         var key = new ResourceKey("Observation", "obs-2");
 
         ParsedQuery matching = service.ParseQuery("Observation", "subject=Patient/example");
-        matching.CustomFilters.ShouldHaveSingleItem().Modifier.ShouldBe("reference");
+        matching.CustomFilters.ShouldBeEmpty();
+        matching.Options.Expression.ShouldNotBeNull();
         service.TestForMatch(key, index, matching, observation, (_, _, _) => false).ShouldBeTrue();
 
         ParsedQuery typeModified = service.ParseQuery("Observation", "subject:Patient=example");
