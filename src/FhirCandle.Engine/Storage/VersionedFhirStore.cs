@@ -995,7 +995,7 @@ public sealed class VersionedFhirStore : IFhirStore
             return false;
         }
 
-        List<ResourceJsonNode> matches = rs.TypeSearch(query).ToList();
+        List<ResourceJsonNode> matches = ApplyChainedExpressions(rs.TypeSearch(query).ToList(), query);
 
         if (ctx.Authorization is not null)
         {
@@ -1025,6 +1025,18 @@ public sealed class VersionedFhirStore : IFhirStore
         };
         return true;
     }
+
+    /// <summary>Filters <paramref name="matches"/> down to those satisfying every one of
+    /// <paramref name="query"/>'s <see cref="ParsedQuery.ChainedExpressions"/> (chained/<c>_has</c>
+    /// parameters) - these are parsed by <see cref="CandleSearchService.ParseQuery"/> but not evaluated
+    /// by <see cref="ResourceStore.TypeSearch"/> itself, since testing them requires resolving other
+    /// resource types' stores via <see cref="GetStore"/>, which only this store (not <see cref="ResourceStore"/>)
+    /// has access to.</summary>
+    private List<ResourceJsonNode> ApplyChainedExpressions(List<ResourceJsonNode> matches, ParsedQuery query) =>
+        query.ChainedExpressions.Count == 0
+            ? matches
+            : matches.Where(candidate => query.ChainedExpressions.All(
+                expr => SearchExecutor.EvaluateChained(expr, candidate, GetStore, _search, _schema))).ToList();
 
     /// <summary>Builds a searchset <see cref="BundleJsonNode"/> from already-filtered/sorted
     /// <paramref name="matches"/>, resolving <c>_include</c>/<c>_revinclude</c> per <paramref name="query"/>.
@@ -2249,7 +2261,10 @@ public sealed class VersionedFhirStore : IFhirStore
             }
 
             ParsedQuery typeQuery = _search.ParseQuery(resourceType, searchQueryParams);
-            matches.AddRange(rs.TypeSearch(typeQuery).Where(r => IsInCompartment(r, ir, ctx.CompartmentType, ctx.Id)));
+            List<ResourceJsonNode> typeMatches = rs.TypeSearch(typeQuery)
+                .Where(r => IsInCompartment(r, ir, ctx.CompartmentType, ctx.Id))
+                .ToList();
+            matches.AddRange(ApplyChainedExpressions(typeMatches, typeQuery));
         }
 
         if (ctx.Authorization is not null)
@@ -2376,9 +2391,9 @@ public sealed class VersionedFhirStore : IFhirStore
             return false;
         }
 
-        List<ResourceJsonNode> matches = rs.TypeSearch(query)
-            .Where(r => IsInCompartment(r, ir, ctx.CompartmentType, ctx.Id))
-            .ToList();
+        List<ResourceJsonNode> matches = ApplyChainedExpressions(
+            rs.TypeSearch(query).Where(r => IsInCompartment(r, ir, ctx.CompartmentType, ctx.Id)).ToList(),
+            query);
 
         if (ctx.Authorization is not null)
         {

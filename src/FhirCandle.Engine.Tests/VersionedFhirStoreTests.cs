@@ -117,4 +117,43 @@ public class VersionedFhirStoreTests
         JsonNode bundle = JsonNode.Parse(searchResponse.SerializedResource)!;
         bundle["total"]!.GetValue<int>().ShouldBe(1);
     }
+
+    [Fact]
+    public void TypeSearch_ChainedSubjectName_FiltersToMatchingReferenceOnly()
+    {
+        VersionedFhirStore store = CreateStore(FhirReleases.FhirSequenceCodes.R4);
+
+        store.InstanceCreate(
+            Ctx(store, "POST", "Patient", """{"resourceType":"Patient","name":[{"family":"Chalmers"}]}"""),
+            out FhirResponseContext matchingPatientResponse);
+        string matchingPatientId = matchingPatientResponse.Id;
+
+        store.InstanceCreate(
+            Ctx(store, "POST", "Patient", """{"resourceType":"Patient","name":[{"family":"Nomatch"}]}"""),
+            out FhirResponseContext otherPatientResponse);
+        string otherPatientId = otherPatientResponse.Id;
+
+        const string observationJsonTemplate =
+            """{"resourceType":"Observation","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"8480-6"}]},"subject":{"reference":"Patient/PATIENT_ID"}}""";
+
+        store.InstanceCreate(
+            Ctx(store, "POST", "Observation", observationJsonTemplate.Replace("PATIENT_ID", matchingPatientId)),
+            out FhirResponseContext matchingObservationResponse);
+        string matchingObservationId = matchingObservationResponse.Id;
+
+        store.InstanceCreate(
+            Ctx(store, "POST", "Observation", observationJsonTemplate.Replace("PATIENT_ID", otherPatientId)),
+            out _);
+
+        bool searchOk = store.TypeSearch(
+            Ctx(store, "GET", "Observation?subject:Patient.name=Chalmers"),
+            out FhirResponseContext searchResponse);
+
+        searchOk.ShouldBeTrue();
+        searchResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        JsonNode bundle = JsonNode.Parse(searchResponse.SerializedResource)!;
+        bundle["total"]!.GetValue<int>().ShouldBe(1);
+        bundle["entry"]![0]!["resource"]!["id"]!.GetValue<string>().ShouldBe(matchingObservationId);
+    }
 }
