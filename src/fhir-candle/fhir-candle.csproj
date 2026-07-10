@@ -78,9 +78,10 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.9" />
 
-    <PackageReference Include="Firely.Fhir.Packages" Version="5.0.2" />
+    <PackageReference Include="Ignixa.PackageManagement" Version="$(IgnixaVersion)" />
     <PackageReference Include="ini-parser-netcore" Version="3.0.0" />
     <PackageReference Include="MailKit" Version="4.17.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.19.1" />
     <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />

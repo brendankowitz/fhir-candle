@@ -32,7 +32,7 @@ namespace fhir.candle._ForPackages
         /// </summary>
         /// <param name="packages">The dictionary of package IDs and versions.</param>
         /// <returns>A list of FHIR version numbers if provided (e.g., 4.0.1), R-literals if not (e.g., R4).</returns>
-        public static List<string> FhirVersionsFromPackages(Dictionary<string, string?>? packages)
+        public static List<string> FhirVersionsFromPackages(Dictionary<string, string>? packages)
         {
             List<string> fhirVersions = new();
 
@@ -41,7 +41,7 @@ namespace fhir.candle._ForPackages
                 return fhirVersions;
             }
 
-            foreach ((string packageId, string? version) in packages)
+            foreach ((string packageId, string version) in packages)
             {
                 Match match = _matchCorePackageOnly.Match(packageId);
                 if (!match.Success)

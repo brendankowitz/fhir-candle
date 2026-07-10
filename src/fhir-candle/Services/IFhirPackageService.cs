@@ -1,15 +1,19 @@
-﻿// <copyright file="IFhirPackageService.cs" company="Microsoft Corporation">
+// <copyright file="IFhirPackageService.cs" company="Microsoft Corporation">
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
 using FhirCandle.Utils;
-using FhirCandle.Models;
-using Firely.Fhir.Packages;
 using Microsoft.Extensions.Hosting;
-using static fhir.candle.Services.FhirPackageService;
 
 namespace fhir.candle.Services;
+
+/// <summary>A package that has been resolved and installed into the local package cache.</summary>
+/// <param name="Id">              The package id (e.g., hl7.fhir.us.core).</param>
+/// <param name="Version">         The installed version or CI tag (e.g., 6.1.0, current, current$branch).</param>
+/// <param name="Directive">       The FHIR-style directive for this package (id#version).</param>
+/// <param name="ContentDirectory">The expanded package content directory (the package/ folder).</param>
+public sealed record InstalledPackage(string Id, string Version, string Directive, string ContentDirectory);
 
 /// <summary>Interface for FHIR package service.</summary>
 public interface IFhirPackageService : IHostedService
@@ -31,8 +35,8 @@ public interface IFhirPackageService : IHostedService
     /// <param name="packageDirectives">The package directives.</param>
     /// <param name="ciLiterals">       The ci literals.</param>
     /// <param name="fhirVersions">     The FHIR versions.</param>
-    /// <returns>An asynchronous result that yields a List&lt;PackageReference&gt;</returns>
-    Task<List<PackageReference>> InstallPackages(
+    /// <returns>An asynchronous result that yields a List&lt;InstalledPackage&gt;</returns>
+    Task<List<InstalledPackage>> InstallPackages(
         string[]? packageDirectives,
         string[]? ciLiterals,
         List<FhirReleases.FhirSequenceCodes>? fhirVersions);
@@ -40,16 +44,16 @@ public interface IFhirPackageService : IHostedService
     /// <summary>
     /// Retrieves the FHIR versions supported by a package.
     /// </summary>
-    /// <param name="packageReference">The package reference.</param>
+    /// <param name="package">The installed package.</param>
     /// <returns>A list of FHIR sequence codes representing the supported versions.</returns>
-    Task<List<FhirReleases.FhirSequenceCodes>?> InstalledPackageFhirVersions(PackageReference packageReference);
+    Task<List<FhirReleases.FhirSequenceCodes>?> InstalledPackageFhirVersions(InstalledPackage package);
 
     /// <summary>
     /// Gets the content directory for a specific package.
     /// </summary>
-    /// <param name="packageReference">The package reference.</param>
+    /// <param name="package">The installed package.</param>
     /// <returns>The content directory for the package, or null if the cache is not configured.</returns>
-    string? GetPackageContentDirectory(PackageReference packageReference);
+    string? GetPackageContentDirectory(InstalledPackage package);
 
     /// <summary>Initializes the FhirPackageService.</summary>
     void Init();

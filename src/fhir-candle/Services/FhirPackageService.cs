@@ -1,23 +1,20 @@
-﻿// <copyright file="FhirPackageService.cs" company="Microsoft Corporation">
+// <copyright file="FhirPackageService.cs" company="Microsoft Corporation">
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
 using fhir.candle._ForPackages;
-using fhir.candle.Models;
-using FhirCandle.Utils;
 using FhirCandle.Configuration;
-using FhirCandle.Extensions;
 using FhirCandle.Models;
-using Firely.Fhir.Packages;
-using Hl7.Fhir.Specification;
-using Microsoft.Extensions.Logging;
+using FhirCandle.Utils;
+using Ignixa.PackageManagement.Abstractions;
+using Ignixa.PackageManagement.DTOs;
+using Ignixa.PackageManagement.Infrastructure;
 using Microsoft.Extensions.Hosting;
-using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Formats.Tar;
 using System.IO.Compression;
-using System.Net;
-using System.Text.RegularExpressions;
 
 namespace fhir.candle.Services;
 
@@ -64,17 +61,6 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
         Parsed,
     }
 
-    /// <summary>(Immutable) The cache.</summary>
-    private _ForPackages.DiskPackageCache? _cache = null;
-
-    /// <summary>(Immutable) The package clients.</summary>
-    private readonly List<PackageClient> _packageClients = [];
-
-    /// <summary>(Immutable) The FHIR CI client (build.fhir.org).</summary>
-    private readonly FhirCiClient _ciClient = new();
-
-    private readonly HashSet<string> _processedMonikers = [];
-
     /// <summary>Information about a package in the cache.</summary>
     public readonly record struct PackageCacheRecord(
         string CacheDirective,
@@ -94,28 +80,39 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
     ];
 
     /// <summary>The logger.</summary>
-    private ILogger _logger;
+    private readonly ILogger _logger;
 
-    /// <summary>True if is initialized, false if not.</summary>
-    private bool _isInitialized = false;
+    /// <summary>Optional logger factory for Ignixa package management components.</summary>
+    private readonly ILoggerFactory? _loggerFactory;
 
     /// <summary>Server configuration.</summary>
-    private CandleConfig _config;
+    private readonly CandleConfig _config;
+
+    /// <summary>(Immutable) The HTTP client shared by registry loaders and search services.</summary>
+    private readonly HttpClient _httpClient = new();
+
+    /// <summary>(Immutable) The FHIR CI client (build.fhir.org).</summary>
+    private readonly FhirCiClient _ciClient = new();
+
+    /// <summary>Per-registry package search services, in resolution priority order.</summary>
+    private readonly List<NpmPackageSearchService> _registrySearchServices = [];
+
+    /// <summary>Composite loader over all configured registries, null until configured.</summary>
+    private IPackageLoader? _packageLoader = null;
 
     /// <summary>Pathname of the cache package directory.</summary>
     private string _cachePackageDirectory = string.Empty;
 
+    /// <summary>True if is initialized, false if not.</summary>
+    private bool _isInitialized = false;
+
     /// <summary>True to disposed value.</summary>
     private bool _disposedValue = false;
 
-    /// <summary>The singleton.</summary>
-    private static FhirPackageService _singleton = null!;
+    private readonly HashSet<string> _processedMonikers = [];
 
     /// <summary>The package records, by directive.</summary>
-    private Dictionary<string, PackageCacheRecord> _packagesByDirective = new();
-
-    /// <summary>Package versions, by package name.</summary>
-    private Dictionary<string, List<string>> _versionsByName = new();
+    private readonly Dictionary<string, PackageCacheRecord> _packagesByDirective = new();
 
     /// <summary>Occurs when On Changed.</summary>
     public event EventHandler<EventArgs>? OnChanged = null;
@@ -123,30 +120,25 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
     /// <summary>Initializes a new instance of the <see cref="FhirPackageService"/> class.</summary>
     /// <param name="logger">             The logger.</param>
     /// <param name="serverConfiguration">The server configuration.</param>
+    /// <param name="loggerFactory">      (Optional) The logger factory, used for package-management components.</param>
     public FhirPackageService(
         ILogger<FhirPackageService> logger,
-        CandleConfig serverConfiguration)
+        CandleConfig serverConfiguration,
+        ILoggerFactory? loggerFactory = null)
     {
         _logger = logger;
         _config = serverConfiguration;
-        _singleton = this;
-        _cache = null;
+        _loggerFactory = loggerFactory;
     }
-
-    /// <summary>Gets the current singleton.</summary>
-    public static FhirPackageService Current => _singleton;
 
     /// <summary>Gets the packages by directive.</summary>
     public Dictionary<string, PackageCacheRecord> PackagesByDirective => _packagesByDirective;
 
     /// <summary>Gets a value indicating whether this object is available.</summary>
-    public bool IsConfigured => _cache is not null;
+    public bool IsConfigured => _packageLoader is not null;
 
     /// <summary>Gets a value indicating whether the package service is ready.</summary>
     public bool IsReady => _isInitialized;
-
-    /// <summary>The completed requests.</summary>
-    private readonly HashSet<string> _processed = new();
 
     /// <summary>Initializes this object.</summary>
     public void Init()
@@ -164,7 +156,10 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
 
         if (_config.FhirCacheDirectory is null)
         {
-            _config.FhirCacheDirectory = Platform.GetFhirPackageRoot();
+            // default to the standard FHIR cache root (~/.fhir), matching other FHIR tooling
+            _config.FhirCacheDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".fhir");
         }
 
         _logger.LogInformation($"Initializing FhirPackageService with cache: {_config.FhirCacheDirectory}");
@@ -185,40 +180,44 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
             _cachePackageDirectory = _config.FhirCacheDirectory;
         }
 
-        _cache = new(_config.FhirCacheDirectory);
+        List<string> registryUrls = [];
 
-        // check if we are using the official registries
         if (_config.UseOfficialRegistries == true)
         {
-            foreach (string url in _officialRegistryUrls)
-            {
-                _packageClients.Add(PackageClient.Create(url));
-            }
+            registryUrls.AddRange(_officialRegistryUrls);
         }
 
-        if (_config.AdditionalFhirRegistryUrls.Any())
+        registryUrls.AddRange(_config.AdditionalFhirRegistryUrls);
+        registryUrls.AddRange(_config.AdditionalNpmRegistryUrls);
+
+        PackageCacheManager tarballCache = new(
+            Path.Combine(_config.FhirCacheDirectory, "tarballs"),
+            CreateLogger<PackageCacheManager>());
+
+        List<IPackageLoader> loaders = [];
+
+        foreach (string url in registryUrls)
         {
-            foreach (string url in _config.AdditionalFhirRegistryUrls)
-            {
-                _packageClients.Add(PackageClient.Create(url, npm: false));
-            }
+            NpmPackageLoaderOptions options = new() { RegistryUrl = url.TrimEnd('/') };
+
+            loaders.Add(new NpmPackageLoader(_httpClient, tarballCache, options, CreateLogger<NpmPackageLoader>()));
+            _registrySearchServices.Add(new NpmPackageSearchService(_httpClient, options, CreateLogger<NpmPackageSearchService>()));
         }
 
-        if (_config.AdditionalNpmRegistryUrls.Any())
+        if (loaders.Count != 0)
         {
-            foreach (string url in _config.AdditionalNpmRegistryUrls)
-            {
-                _packageClients.Add(PackageClient.Create(url, npm: true));
-            }
+            _packageLoader = new CompositePackageLoader(CreateLogger<CompositePackageLoader>(), [.. loaders]);
         }
     }
+
+    private ILogger<T> CreateLogger<T>() => _loggerFactory?.CreateLogger<T>() ?? NullLogger<T>.Instance;
 
     /// <summary>Triggered when the application host is ready to start the service.</summary>
     /// <param name="cancellationToken">Indicates that the start process has been aborted.</param>
     /// <returns>An asynchronous result.</returns>
     Task IHostedService.StartAsync(CancellationToken cancellationToken)
     {
-        if (_cache is null)
+        if (_packageLoader is null)
         {
             _logger.LogInformation("Disabling FhirPackageService, --fhir-package-cache set to empty.");
             return Task.CompletedTask;
@@ -240,339 +239,20 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// A record struct representing a package cache entry.
-    /// </summary>
-    /// <param name="fhirVersion">The FHIR version of the package.</param>
-    /// <param name="directory">The directory where the package is stored.</param>
-    /// <param name="resolvedDirective">The resolved directive of the package.</param>
-    /// <param name="name">The name of the package.</param>
-    /// <param name="version">The version of the package.</param>
-    /// <param name="umbrellaPackageName">The umbrella package name that this package is part of.</param>
-    public record struct PackageCacheEntry(
-        FhirReleases.FhirSequenceCodes fhirVersion,
-        string directory,
-        string resolvedDirective,
-        string name,
-        string version,
-        string umbrellaPackageName);
-
-    public async Task<List<PackageReference>> InstallPackages(
-        string[]? packageDirectives,
-        string[]? ciLiterals,
-        List<FhirReleases.FhirSequenceCodes>? fhirVersions)
-    {
-        List<PackageReference> localPackages = [];
-
-        List<string> directives = packageDirectives?.ToList() ?? new();
-
-        directives.AddRange(await ResolveCiLiterals(ciLiterals));
-
-        if (directives.Count == 0)
-        {
-            return [];
-        }
-
-        if (_cache is null)
-        {
-            _logger.LogError("InstallPackages <<< Packages have been requested, but no cache has been configured!");
-            return [];
-        }
-
-        // traverse our package directives
-        foreach (string inputDirective in directives)
-        {
-            // TODO(ginoc): PR in to Parse FHIR-style directives, remove when added.
-            string directive = inputDirective.Contains('@')
-                ? inputDirective
-                : inputDirective.Replace('#', '@');
-
-            PackageReference packageReference = PackageReference.Parse(directive);
-
-            if (packageReference.Name is null)
-            {
-                _logger.LogWarning($"InstallPackages <<< Failed to parse package reference: {directive}");
-                continue;
-            }
-
-            bool needsInstall = true;
-
-            VersionHandlingTypes vht = GetVersionHandlingType(packageReference.Version);
-
-            // do special handling for versions if necessary
-            switch (vht)
-            {
-                case VersionHandlingTypes.Latest:
-                    {
-                        // resolve the version via Firely Packages so that we have access to the actual version number
-                        (PackageReference pr, IPackageServer? _) = await ResolveLatest(packageReference.Name);
-
-                        if ((pr == PackageReference.None) || (pr.Name is null))
-                        {
-                            throw new Exception($"Failed to resolve latest version of {packageReference.Name} ({directive})");
-                        }
-
-                        packageReference = pr;
-                        needsInstall = !await _cache.IsInstalled(packageReference);
-                    }
-                    break;
-
-                case VersionHandlingTypes.Local:
-                    // ensure there is a local build, there is no other source
-                    {
-                        if (!_cache.IsInstalled(packageReference).Result)
-                        {
-                            throw new Exception($"Local build of {packageReference.Name} is not installed ({directive})");
-                        }
-                    }
-                    break;
-
-                case VersionHandlingTypes.ContinuousIntegration:
-                    // always trigger install/update for CI builds
-                    needsInstall = true;
-                    packageReference.Scope = FhirCiClient.FhirCiScope;
-                    break;
-
-                default:
-                    needsInstall = !await _cache.IsInstalled(packageReference);
-                    break;
-            }
-
-            // skip if we have already loaded this package
-            if (_processedMonikers.Contains(packageReference.Moniker))
-            {
-                _logger.LogInformation($"Skipping already loaded dependency: {packageReference.Moniker}");
-                continue;
-            }
-            _processedMonikers.Add(packageReference.Moniker);
-
-            _logger.LogInformation($"Processing {packageReference.Moniker}...");
-
-            // check to see if this package needs to be installed
-            if (needsInstall &&
-                (await InstallPackage(packageReference) == false))
-            {
-                // failed to install
-                throw new Exception($"Failed to install package {packageReference.Moniker} as requested by {inputDirective}");
-            }
-
-            // add this package
-            localPackages.Add(packageReference);
-
-            // check to see if we have a specified FHIR versions and need to filter
-            if (fhirVersions?.Count > 0)
-            {
-                // read the manifest to pull the FHIR version of the package
-                _ForPackages.PackageManifest manifest = await _cache.ReadManifestEx(packageReference) ?? throw new Exception("Failed to load package manifest");
-
-                if (manifest.AnyFhirVersions?.FirstOrDefault() is not string manifestFhirVersion)
-                {
-                    _logger.LogInformation($"InstallPackages <<< Package {packageReference.Moniker} does not report a FHIR version!");
-                    continue;
-                }
-
-                // get the FHIR version of the package
-                FhirReleases.FhirSequenceCodes packageFhirSequence = FhirReleases.FhirVersionToSequence(manifestFhirVersion);
-
-                // iterate over our requested FHIR versions
-                foreach (FhirReleases.FhirSequenceCodes fhirSequence in fhirVersions)
-                {
-                    if (packageFhirSequence == fhirSequence)
-                    {
-                        continue;
-                    }
-
-                    _logger.LogInformation($"InstallPackages <<< {packageReference.Moniker} ({manifestFhirVersion}) does not match requested FHIR version {fhirSequence}!");
-
-                    string packageIdSuffix = packageReference.Name.Split('.')[^1];
-                    FhirReleases.FhirSequenceCodes packageIdSuffixCode = FhirReleases.FhirVersionToSequence(packageIdSuffix);
-
-                    string requiredRLiteral = fhirSequence.ToRLiteral().ToLowerInvariant();
-                    string desiredName = (packageIdSuffixCode == FhirReleases.FhirSequenceCodes.Unknown)
-                        ? $"{packageReference.Name}.{requiredRLiteral}"
-                        : $"{string.Join('.', packageReference.Name.Split('.')[..^1])}.{requiredRLiteral}";
-                    string desiredMoniker = $"{desiredName}@{packageReference.Version}";
-
-                    // check to see if this package exists anywhere
-                    if (!await PackageExists(desiredName))
-                    {
-                        continue;
-                    }
-
-                    // install this package
-                    List<PackageReference> deps = await InstallPackages([desiredMoniker], null, fhirVersions);
-
-                    if (_processedMonikers.Contains(desiredMoniker))
-                    {
-                        _logger.LogInformation($"Package {desiredMoniker} loaded for {packageReference.Moniker}!");
-                    }
-                    else
-                    {
-                        _logger.LogInformation($"Could not find substitute for {packageReference.Moniker} - please specify manually if this is required!");
-                    }
-
-                    localPackages.AddRange(deps);
-                }
-            }
-        }
-
-        return localPackages;
-    }
-
-    private async ValueTask<(PackageReference, IPackageServer?)> ResolveLatest(string name)
-    {
-        List<(PackageReference pr, IPackageServer server)> latestRecs = new();
-
-        foreach (IPackageServer server in _packageClients)
-        {
-            PackageReference pr = await server.GetLatest(name);
-            if (pr == PackageReference.None)
-            {
-                continue;
-            }
-            latestRecs.Add((pr, server));
-        }
-
-        if (latestRecs.Count == 0)
-        {
-            return (PackageReference.None, null);
-        }
-
-        return latestRecs.OrderByDescending(v => v.pr.Version).First();
-    }
-
-    /// <summary>
-    /// Installs a package.
-    /// </summary>
-    /// <param name="packageReference">The package reference.</param>
-    /// <returns>A task representing the asynchronous operation. The task result contains a boolean value indicating whether the package was installed successfully.</returns>
-    private async Task<bool> InstallPackage(PackageReference packageReference)
-    {
-        if (_cache is null)
-        {
-            return false;
-        }
-
-        if (packageReference.Scope == FhirCiClient.FhirCiScope)
-        {
-            await _ciClient.InstallOrUpdate(packageReference, _cache);
-            return true;
-        }
-
-        foreach (IPackageServer pc in _packageClients)
-        {
-            try
-            {
-                // try to download this package
-                byte[] data = await pc.GetPackage(packageReference);
-
-                // try to install this package
-                await _cache.Install(packageReference, data);
-
-                // only need to install from first hit
-                return true;
-            }
-            catch (Exception)
-            {
-                // ignore
-            }
-        }
-
-        return false;
-    }
-
-    private async Task<bool> PackageExists(string packageId)
-    {
-        if (_cache is null)
-        {
-            return false;
-        }
-
-        foreach (IPackageServer pc in _packageClients)
-        {
-            try
-            {
-                Firely.Fhir.Packages.Versions? versions = await pc.GetVersions(packageId);
-
-                if (versions?.IsEmpty == false)
-                {
-                    return true;
-                }
-            }
-            catch (Exception)
-            {
-                // ignore
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Retrieves the FHIR versions supported by a package.
-    /// </summary>
-    /// <param name="packageReference">The package reference.</param>
-    /// <returns>A list of FHIR sequence codes representing the supported versions.</returns>
-    public async Task<List<FhirReleases.FhirSequenceCodes>?> InstalledPackageFhirVersions(PackageReference packageReference)
-    {
-        if (_cache is null)
-        {
-            return null;
-        }
-
-        if (!await _cache.IsInstalled(packageReference))
-        {
-            return null;
-        }
-
-        _ForPackages.PackageManifest manifest = await _cache.ReadManifestEx(packageReference) ?? throw new Exception("Failed to load package manifest");
-
-        return manifest.AnyFhirVersions?.Select(FhirReleases.FhirVersionToSequence).ToList();
-    }
-
-    /// <summary>
-    /// Gets the content directory for a specific package.
-    /// </summary>
-    /// <param name="packageReference">The package reference.</param>
-    /// <returns>The content directory for the package, or null if the cache is not configured.</returns>
-    public string? GetPackageContentDirectory(PackageReference packageReference)
-    {
-        if (_cache is null)
-        {
-            return null;
-        }
-
-        return _cache.PackageContentFolder(packageReference);
-    }
-
-    /// <summary>
-    /// Deletes a package based on the provided package directive.
-    /// </summary>
-    /// <param name="packageDirective">The package directive specifying the package to delete.</param>
-    public void DeletePackage(string packageDirective)
-    {
-        if (_cache is null)
-        {
-            return;
-        }
-
-        string[] components = packageDirective.Split('@', '#');
-
-        if (components.Length != 2)
-        {
-            _logger.LogWarning($"DeletePackage <<< invalid package directive: {packageDirective}");
-            return;
-        }
-
-        _ = _cache.Delete(new PackageReference(components[0], components[1]));
-    }
+    /// <summary>Converts a FHIR-style directive (name#version) to the npm style (name@version).</summary>
+    /// <param name="directive">The input directive.</param>
+    /// <returns>The normalized directive; unchanged when it already contains an '@'.</returns>
+    internal static string NormalizeDirective(string directive) =>
+        directive.Contains('@')
+            ? directive
+            : directive.Replace('#', '@');
 
     /// <summary>
     /// Gets the version handling type based on the provided version string.
     /// </summary>
     /// <param name="version">The version string.</param>
     /// <returns>The version handling type.</returns>
-    private VersionHandlingTypes GetVersionHandlingType(string? version)
+    internal static VersionHandlingTypes GetVersionHandlingType(string? version)
     {
         // handle simple literals
         switch (version)
@@ -604,6 +284,427 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
     }
 
     /// <summary>
+    /// Extracts a FHIR npm package tarball to disk, preserving the archive layout (package/...).
+    /// </summary>
+    /// <param name="tgzStream">           Stream containing the gzipped tarball.</param>
+    /// <param name="packageRootDirectory">Directory the archive is expanded into; the package
+    ///  content lands in its package/ subdirectory.</param>
+    /// <returns>The parsed package manifest (package.json).</returns>
+    internal static FhirNpmPackageDetails ExtractPackageTarball(Stream tgzStream, string packageRootDirectory)
+    {
+        Directory.CreateDirectory(packageRootDirectory);
+        string fullRoot = Path.GetFullPath(packageRootDirectory);
+
+        using GZipStream gz = new(tgzStream, CompressionMode.Decompress, leaveOpen: true);
+        using TarReader reader = new(gz);
+
+        while (reader.GetNextEntry() is { } entry)
+        {
+            if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile))
+            {
+                continue;
+            }
+
+            string name = entry.Name.Replace('\\', '/');
+            if (name.StartsWith("./", StringComparison.Ordinal))
+            {
+                name = name[2..];
+            }
+
+            if ((name.Length == 0) ||
+                name.Split('/').Any(segment => (segment == "..") || (segment == string.Empty)))
+            {
+                continue;
+            }
+
+            string destination = Path.GetFullPath(Path.Combine(fullRoot, name));
+            if (!destination.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            entry.ExtractToFile(destination, overwrite: true);
+        }
+
+        return FhirNpmPackageDetails.Load(fullRoot);
+    }
+
+    /// <summary>Installs packages based on directives or CI literals.</summary>
+    /// <exception cref="Exception">Thrown when a package cannot be resolved or installed.</exception>
+    /// <param name="packageDirectives">The package directives.</param>
+    /// <param name="ciLiterals">       The ci literals.</param>
+    /// <param name="fhirVersions">     The FHIR versions.</param>
+    /// <returns>An asynchronous result that yields a List&lt;InstalledPackage&gt;</returns>
+    public async Task<List<InstalledPackage>> InstallPackages(
+        string[]? packageDirectives,
+        string[]? ciLiterals,
+        List<FhirReleases.FhirSequenceCodes>? fhirVersions)
+    {
+        List<InstalledPackage> localPackages = [];
+
+        List<string> directives = packageDirectives?.ToList() ?? new();
+
+        directives.AddRange(await ResolveCiLiterals(ciLiterals));
+
+        if (directives.Count == 0)
+        {
+            return [];
+        }
+
+        if (_packageLoader is null)
+        {
+            _logger.LogError("InstallPackages <<< Packages have been requested, but no cache has been configured!");
+            return [];
+        }
+
+        // traverse our package directives
+        foreach (string inputDirective in directives)
+        {
+            string directive = NormalizeDirective(inputDirective);
+
+            int separatorIndex = directive.IndexOf('@');
+            string name = separatorIndex == -1 ? directive : directive[..separatorIndex];
+            string? version = separatorIndex == -1 ? null : directive[(separatorIndex + 1)..];
+
+            if (string.IsNullOrEmpty(name))
+            {
+                _logger.LogWarning($"InstallPackages <<< Failed to parse package reference: {directive}");
+                continue;
+            }
+
+            bool needsInstall = true;
+            bool isCiPackage = false;
+
+            VersionHandlingTypes vht = GetVersionHandlingType(version);
+
+            // do special handling for versions if necessary
+            switch (vht)
+            {
+                case VersionHandlingTypes.Latest:
+                    {
+                        // resolve the version via the registries so that we have access to the actual version number
+                        version = await ResolveLatestVersion(name)
+                            ?? throw new Exception($"Failed to resolve latest version of {name} ({directive})");
+
+                        needsInstall = !IsPackageInstalled(name, version);
+                    }
+                    break;
+
+                case VersionHandlingTypes.Local:
+                    // ensure there is a local build, there is no other source
+                    {
+                        if (!IsPackageInstalled(name, version!))
+                        {
+                            throw new Exception($"Local build of {name} is not installed ({directive})");
+                        }
+
+                        needsInstall = false;
+                    }
+                    break;
+
+                case VersionHandlingTypes.ContinuousIntegration:
+                    // always trigger install/update for CI builds
+                    needsInstall = true;
+                    isCiPackage = true;
+                    break;
+
+                default:
+                    needsInstall = !IsPackageInstalled(name, version!);
+                    break;
+            }
+
+            string moniker = $"{name}@{version}";
+
+            // skip if we have already loaded this package
+            if (_processedMonikers.Contains(moniker))
+            {
+                _logger.LogInformation($"Skipping already loaded dependency: {moniker}");
+                continue;
+            }
+            _processedMonikers.Add(moniker);
+
+            _logger.LogInformation($"Processing {moniker}...");
+
+            InstalledPackage installedPackage;
+
+            if (isCiPackage)
+            {
+                try
+                {
+                    installedPackage = await _ciClient.InstallOrUpdateAsync(name, version, _cachePackageDirectory);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Failed to install package {moniker} as requested by {inputDirective}", ex);
+                }
+            }
+            else
+            {
+                string packageRoot = Path.Combine(_cachePackageDirectory, $"{name}#{version}");
+
+                if (needsInstall &&
+                    !await InstallPackage(name, version!, packageRoot))
+                {
+                    // failed to install
+                    throw new Exception($"Failed to install package {moniker} as requested by {inputDirective}");
+                }
+
+                installedPackage = new InstalledPackage(name, version!, $"{name}#{version}", Path.Combine(packageRoot, "package"));
+            }
+
+            // add this package
+            localPackages.Add(installedPackage);
+
+            // check to see if we have a specified FHIR versions and need to filter
+            if (fhirVersions?.Count > 0)
+            {
+                // read the manifest to pull the FHIR version of the package
+                FhirNpmPackageDetails manifest = LoadManifest(installedPackage.ContentDirectory)
+                    ?? throw new Exception("Failed to load package manifest");
+
+                if (GetManifestFhirVersions(manifest).FirstOrDefault() is not string manifestFhirVersion)
+                {
+                    _logger.LogInformation($"InstallPackages <<< Package {moniker} does not report a FHIR version!");
+                    continue;
+                }
+
+                // get the FHIR version of the package
+                FhirReleases.FhirSequenceCodes packageFhirSequence = FhirReleases.FhirVersionToSequence(manifestFhirVersion);
+
+                // iterate over our requested FHIR versions
+                foreach (FhirReleases.FhirSequenceCodes fhirSequence in fhirVersions)
+                {
+                    if (packageFhirSequence == fhirSequence)
+                    {
+                        continue;
+                    }
+
+                    _logger.LogInformation($"InstallPackages <<< {moniker} ({manifestFhirVersion}) does not match requested FHIR version {fhirSequence}!");
+
+                    string packageIdSuffix = name.Split('.')[^1];
+                    FhirReleases.FhirSequenceCodes packageIdSuffixCode = FhirReleases.FhirVersionToSequence(packageIdSuffix);
+
+                    string requiredRLiteral = fhirSequence.ToRLiteral().ToLowerInvariant();
+                    string desiredName = (packageIdSuffixCode == FhirReleases.FhirSequenceCodes.Unknown)
+                        ? $"{name}.{requiredRLiteral}"
+                        : $"{string.Join('.', name.Split('.')[..^1])}.{requiredRLiteral}";
+                    string desiredMoniker = $"{desiredName}@{version}";
+
+                    // check to see if this package exists anywhere
+                    if (!await PackageExists(desiredName))
+                    {
+                        continue;
+                    }
+
+                    // install this package
+                    List<InstalledPackage> deps = await InstallPackages([desiredMoniker], null, fhirVersions);
+
+                    if (_processedMonikers.Contains(desiredMoniker))
+                    {
+                        _logger.LogInformation($"Package {desiredMoniker} loaded for {moniker}!");
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"Could not find substitute for {moniker} - please specify manually if this is required!");
+                    }
+
+                    localPackages.AddRange(deps);
+                }
+            }
+        }
+
+        return localPackages;
+    }
+
+    /// <summary>Resolves the latest published version of a package across the configured registries.</summary>
+    /// <param name="name">The package name.</param>
+    /// <returns>The latest version, or null if the package cannot be found on any registry.</returns>
+    private async Task<string?> ResolveLatestVersion(string name)
+    {
+        List<string> candidates = [];
+
+        foreach (NpmPackageSearchService searchService in _registrySearchServices)
+        {
+            try
+            {
+                PackageDetails? details = await searchService.GetPackageDetailsAsync(name);
+
+                string? latest = details?.LatestVersion ?? details?.Versions.FirstOrDefault()?.Version;
+
+                if (!string.IsNullOrEmpty(latest))
+                {
+                    candidates.Add(latest!);
+                }
+            }
+            catch (Exception)
+            {
+                // ignore - registries that do not know the package throw
+            }
+        }
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        return candidates.OrderByDescending(v => v, StringComparer.Ordinal).First();
+    }
+
+    /// <summary>
+    /// Installs a package by downloading it from the configured registries and expanding it on disk.
+    /// </summary>
+    /// <param name="name">       The package name.</param>
+    /// <param name="version">    The package version.</param>
+    /// <param name="packageRoot">The directory the package is expanded into.</param>
+    /// <returns>A task representing the asynchronous operation. The task result contains a boolean value indicating whether the package was installed successfully.</returns>
+    private async Task<bool> InstallPackage(string name, string version, string packageRoot)
+    {
+        if (_packageLoader is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            await using Stream tgz = await _packageLoader.DownloadPackageAsync(name, version, CancellationToken.None);
+
+            if (Directory.Exists(packageRoot))
+            {
+                Directory.Delete(packageRoot, true);
+            }
+
+            _ = ExtractPackageTarball(tgz, packageRoot);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"InstallPackage <<< failed to install {name}@{version}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Checks whether a package version exists on any configured registry.</summary>
+    /// <param name="packageId">The package id.</param>
+    /// <returns>True if the package exists, false if not.</returns>
+    private async Task<bool> PackageExists(string packageId)
+    {
+        foreach (NpmPackageSearchService searchService in _registrySearchServices)
+        {
+            try
+            {
+                PackageDetails? details = await searchService.GetPackageDetailsAsync(packageId);
+
+                if ((details?.Versions.Count > 0) ||
+                    (details?.LatestVersion is not null))
+                {
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+                // ignore
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Checks whether a package has already been expanded into the local cache.</summary>
+    private bool IsPackageInstalled(string name, string version) =>
+        Directory.Exists(Path.Combine(_cachePackageDirectory, $"{name}#{version}", "package"));
+
+    /// <summary>Loads the package.json manifest from an expanded content directory.</summary>
+    private static FhirNpmPackageDetails? LoadManifest(string contentDirectory)
+    {
+        try
+        {
+            return FhirNpmPackageDetails.Load(contentDirectory);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets the FHIR versions declared by a manifest: fhirVersions / fhir-version-list / fhirVersion,
+    /// falling back to versions derived from core-package dependencies.
+    /// </summary>
+    private static List<string> GetManifestFhirVersions(FhirNpmPackageDetails manifest) =>
+        manifest.FhirVersions.Any()
+            ? manifest.FhirVersions.ToList()
+            : VersionExtensions.FhirVersionsFromPackages(manifest.Dependencies);
+
+    /// <summary>
+    /// Retrieves the FHIR versions supported by a package.
+    /// </summary>
+    /// <param name="package">The installed package.</param>
+    /// <returns>A list of FHIR sequence codes representing the supported versions.</returns>
+    public Task<List<FhirReleases.FhirSequenceCodes>?> InstalledPackageFhirVersions(InstalledPackage package)
+    {
+        if (_packageLoader is null)
+        {
+            return Task.FromResult<List<FhirReleases.FhirSequenceCodes>?>(null);
+        }
+
+        if (!Directory.Exists(package.ContentDirectory))
+        {
+            return Task.FromResult<List<FhirReleases.FhirSequenceCodes>?>(null);
+        }
+
+        FhirNpmPackageDetails manifest = LoadManifest(package.ContentDirectory)
+            ?? throw new Exception("Failed to load package manifest");
+
+        return Task.FromResult<List<FhirReleases.FhirSequenceCodes>?>(
+            GetManifestFhirVersions(manifest).Select(FhirReleases.FhirVersionToSequence).ToList());
+    }
+
+    /// <summary>
+    /// Gets the content directory for a specific package.
+    /// </summary>
+    /// <param name="package">The installed package.</param>
+    /// <returns>The content directory for the package, or null if the cache is not configured.</returns>
+    public string? GetPackageContentDirectory(InstalledPackage package)
+    {
+        if (_packageLoader is null)
+        {
+            return null;
+        }
+
+        return Directory.Exists(package.ContentDirectory)
+            ? package.ContentDirectory
+            : null;
+    }
+
+    /// <summary>
+    /// Deletes a package based on the provided package directive.
+    /// </summary>
+    /// <param name="packageDirective">The package directive specifying the package to delete.</param>
+    public void DeletePackage(string packageDirective)
+    {
+        if (string.IsNullOrEmpty(_cachePackageDirectory))
+        {
+            return;
+        }
+
+        string[] components = packageDirective.Split('@', '#');
+
+        if (components.Length != 2)
+        {
+            _logger.LogWarning($"DeletePackage <<< invalid package directive: {packageDirective}");
+            return;
+        }
+
+        string packageRoot = Path.Combine(_cachePackageDirectory, $"{components[0]}#{components[1]}");
+
+        if (Directory.Exists(packageRoot))
+        {
+            Directory.Delete(packageRoot, true);
+        }
+    }
+
+    /// <summary>
     /// Resolves the CI literals into standard directives.
     /// </summary>
     /// <param name="ciLiterals">The CI literals to resolve.</param>
@@ -624,7 +725,7 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
             }
 
             // try the repository reference first
-            List<PackageCatalogEntry> entries = await _ciClient.CatalogPackagesAsync(repo: literal);
+            List<CiPackageCatalogEntry> entries = await _ciClient.CatalogPackagesAsync(repo: literal);
             if (entries.Count == 0)
             {
                 // check for a publication URL
@@ -643,19 +744,19 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
                 continue;
             }
 
-            PackageCatalogEntry entry = entries.First();
+            CiPackageCatalogEntry entry = entries.First();
 
             // check to see if we have a package name and repository URL
             if (string.IsNullOrEmpty(entry.Name) ||
-                string.IsNullOrEmpty(entry.Description) ||
-                !entry.Description.Contains('/'))
+                string.IsNullOrEmpty(entry.RepositoryUrl) ||
+                !entry.RepositoryUrl!.Contains('/'))
             {
-                _logger.LogWarning($"ResolveCiLiterals <<< invalid resolution for CI directive: {literal}! Name: {entry.Name}, Description: {entry.Description}");
+                _logger.LogWarning($"ResolveCiLiterals <<< invalid resolution for CI directive: {literal}! Name: {entry.Name}, Repository: {entry.RepositoryUrl}");
                 continue;
             }
 
             // get the branch name from the repo url
-            (string? branchName, bool isDefaultBranch) = FhirCiClient.GetBranchNameRepoLiteral(entry.Description);
+            (string? branchName, bool isDefaultBranch) = FhirCiClient.GetBranchNameRepoLiteral(entry.RepositoryUrl);
 
             if (isDefaultBranch)
             {
@@ -734,13 +835,12 @@ public partial class FhirPackageService : IFhirPackageService, IDisposable
     {
         if (!_disposedValue)
         {
-            // dispose managed state (managed objects)
-            //if (disposing)
-            //{
-            //}
+            if (disposing)
+            {
+                _httpClient.Dispose();
+                ((IDisposable)_ciClient).Dispose();
+            }
 
-            // free unmanaged resources (unmanaged objects) and override finalizer
-            // set large fields to null
             _disposedValue = true;
         }
     }

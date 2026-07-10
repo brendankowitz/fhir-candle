@@ -16,7 +16,6 @@ using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
 using FhirStore.Smart;
-using Firely.Fhir.Packages;
 using Hl7.Fhir.Utility;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
@@ -551,15 +550,15 @@ public class FhirStoreManager : IFhirStoreManager, IDisposable
 
         List<FhirReleases.FhirSequenceCodes> allTenantFhirVersions = _tenants.Values.Select(t => t.FhirVersion).Distinct().ToList();
 
-        List<PackageReference> localPackages = await _packageService.InstallPackages(
+        List<InstalledPackage> localPackages = await _packageService.InstallPackages(
             _serverConfig.PublishedPackages,
             _serverConfig.CiPackages,
             allTenantFhirVersions);
 
         // loop over package references to load - go in ascending version order the newest versions are loaded last
-        foreach (PackageReference pr in localPackages.OrderBy(r => r.Version))
+        foreach (InstalledPackage pr in localPackages.OrderBy(r => r.Version))
         {
-            _logger.LogInformation($"FhirStoreManager <<< discovering and loading additional content for {pr.Moniker}...");
+            _logger.LogInformation($"FhirStoreManager <<< discovering and loading additional content for {pr.Directive}...");
 
             List<FhirReleases.FhirSequenceCodes>? packageFhirVersions = await _packageService.InstalledPackageFhirVersions(pr);
 
@@ -577,14 +576,14 @@ public class FhirStoreManager : IFhirStoreManager, IDisposable
                 if (_packageService.GetPackageContentDirectory(pr) is string contentDir)
                 {
                     // check to see if we should skip this package for this tenant because a FHIR-version-specific package exists
-                    string packageName = pr.Name! + "." + config.FhirVersion.ToRLiteral().ToLowerInvariant();
-                    if (localPackages.Any(r => r.Name == packageName))
+                    string packageName = pr.Id + "." + config.FhirVersion.ToRLiteral().ToLowerInvariant();
+                    if (localPackages.Any(r => r.Id == packageName))
                     {
                         continue;
                     }
 
                     _storesByController[tenantName].LoadPackage(
-                        pr.Moniker,
+                        pr.Directive,
                         contentDir,
                         GetSupplementDir(supplementalRoot, pr),
                         loadExamples);
@@ -594,10 +593,10 @@ public class FhirStoreManager : IFhirStoreManager, IDisposable
     }
 
     /// <summary>Gets supplement dir.</summary>
-    /// <param name="supplementalRoot"> The supplemental root.</param>
-    /// <param name="packageReference">The resolved package entry to examine</param>
+    /// <param name="supplementalRoot">The supplemental root.</param>
+    /// <param name="package">         The resolved package entry to examine</param>
     /// <returns>The supplement dir.</returns>
-    private string GetSupplementDir(string supplementalRoot, PackageReference packageReference)
+    private string GetSupplementDir(string supplementalRoot, InstalledPackage package)
     {
         if (string.IsNullOrEmpty(supplementalRoot))
         {
@@ -605,22 +604,22 @@ public class FhirStoreManager : IFhirStoreManager, IDisposable
         }
 
         // check to see if we have an exact match
-        string dir = Path.Combine(supplementalRoot, packageReference.Moniker);
+        string dir = Path.Combine(supplementalRoot, package.Directive);
         if (Directory.Exists(dir))
         {
             return dir;
         }
 
-        dir = Path.Combine(supplementalRoot, packageReference.Moniker.Replace('@', '#'));
+        dir = Path.Combine(supplementalRoot, package.Directive.Replace('#', '@'));
         if (Directory.Exists(dir))
         {
             return dir;
         }
 
         // check for named package without version
-        if (!string.IsNullOrEmpty(packageReference.Name))
+        if (!string.IsNullOrEmpty(package.Id))
         {
-            dir = Path.Combine(supplementalRoot, packageReference.Name);
+            dir = Path.Combine(supplementalRoot, package.Id);
             if (Directory.Exists(dir))
             {
                 return dir;
