@@ -3,8 +3,6 @@
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
-extern alias candleR4B;
-
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
@@ -14,7 +12,6 @@ using Shouldly;
 using System.Net;
 using System.Text.Json;
 using Xunit.Abstractions;
-using candleR4B::FhirCandle.Storage;
 
 namespace fhir.candle.Tests;
 

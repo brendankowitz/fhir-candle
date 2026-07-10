@@ -3,16 +3,11 @@
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
-extern alias candleR4;
-extern alias candleR4B;
-extern alias candleR5;
-
 using fhir.candle.Tests.Extensions;
 using fhir.candle.Tests.Models;
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
-using Hl7.Fhir.Rest;
 using Shouldly;
 using System.Net;
 using System.Text.Json;
@@ -104,15 +99,15 @@ public class FhirStoreTests
             AllowCreateAsUpdate = true,
         };
 
-        _candleR4 = new candleR4::FhirCandle.Storage.VersionedFhirStore();
+        _candleR4 = new VersionedFhirStore();
         _candleR4.Init(_configR4);
         _stores.Add(FhirReleases.FhirSequenceCodes.R4, _candleR4);
 
-        _candleR4B = new candleR4B::FhirCandle.Storage.VersionedFhirStore();
+        _candleR4B = new VersionedFhirStore();
         _candleR4B.Init(_configR4B);
         _stores.Add(FhirReleases.FhirSequenceCodes.R4B, _candleR4B);
 
-        _candleR5 = new candleR5::FhirCandle.Storage.VersionedFhirStore();
+        _candleR5 = new VersionedFhirStore();
         _candleR5.Init(_configR5);
         _stores.Add(FhirReleases.FhirSequenceCodes.R5, _candleR5);
     }
@@ -1068,7 +1063,7 @@ public class TestPostPutIdSemanticsStrict
             BaseUrl = "http://localhost/fhir/r4-strict",
             Strict = true,
         };
-        IFhirStore candleR4 = new candleR4::FhirCandle.Storage.VersionedFhirStore();
+        IFhirStore candleR4 = new VersionedFhirStore();
         candleR4.Init(configR4);
         _stores.Add(FhirReleases.FhirSequenceCodes.R4, candleR4);
 
@@ -1079,7 +1074,7 @@ public class TestPostPutIdSemanticsStrict
             BaseUrl = "http://localhost/fhir/r4b-strict",
             Strict = true,
         };
-        IFhirStore candleR4B = new candleR4B::FhirCandle.Storage.VersionedFhirStore();
+        IFhirStore candleR4B = new VersionedFhirStore();
         candleR4B.Init(configR4B);
         _stores.Add(FhirReleases.FhirSequenceCodes.R4B, candleR4B);
 
@@ -1090,7 +1085,7 @@ public class TestPostPutIdSemanticsStrict
             BaseUrl = "http://localhost/fhir/r5-strict",
             Strict = true,
         };
-        IFhirStore candleR5 = new candleR5::FhirCandle.Storage.VersionedFhirStore();
+        IFhirStore candleR5 = new VersionedFhirStore();
         candleR5.Init(configR5);
         _stores.Add(FhirReleases.FhirSequenceCodes.R5, candleR5);
     }
@@ -1254,9 +1249,9 @@ public class TestStrictModeCompositionWins
 
         IFhirStore store = version switch
         {
-            FhirReleases.FhirSequenceCodes.R4 => new candleR4::FhirCandle.Storage.VersionedFhirStore(),
-            FhirReleases.FhirSequenceCodes.R4B => new candleR4B::FhirCandle.Storage.VersionedFhirStore(),
-            FhirReleases.FhirSequenceCodes.R5 => new candleR5::FhirCandle.Storage.VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R4 => new VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R4B => new VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R5 => new VersionedFhirStore(),
             _ => throw new ArgumentOutOfRangeException(nameof(version)),
         };
 
@@ -1297,9 +1292,9 @@ public class TestStrictModeIdSemantics
 
             IFhirStore store = version switch
             {
-                FhirReleases.FhirSequenceCodes.R4 => new candleR4::FhirCandle.Storage.VersionedFhirStore(),
-                FhirReleases.FhirSequenceCodes.R4B => new candleR4B::FhirCandle.Storage.VersionedFhirStore(),
-                FhirReleases.FhirSequenceCodes.R5 => new candleR5::FhirCandle.Storage.VersionedFhirStore(),
+                FhirReleases.FhirSequenceCodes.R4 => new VersionedFhirStore(),
+                FhirReleases.FhirSequenceCodes.R4B => new VersionedFhirStore(),
+                FhirReleases.FhirSequenceCodes.R5 => new VersionedFhirStore(),
                 _ => throw new ArgumentOutOfRangeException(nameof(version)),
             };
             store.Init(cfg);
@@ -1541,9 +1536,9 @@ public class TestLenientModeIdSemantics
 
             IFhirStore store = version switch
             {
-                FhirReleases.FhirSequenceCodes.R4 => new candleR4::FhirCandle.Storage.VersionedFhirStore(),
-                FhirReleases.FhirSequenceCodes.R4B => new candleR4B::FhirCandle.Storage.VersionedFhirStore(),
-                FhirReleases.FhirSequenceCodes.R5 => new candleR5::FhirCandle.Storage.VersionedFhirStore(),
+                FhirReleases.FhirSequenceCodes.R4 => new VersionedFhirStore(),
+                FhirReleases.FhirSequenceCodes.R4B => new VersionedFhirStore(),
+                FhirReleases.FhirSequenceCodes.R5 => new VersionedFhirStore(),
                 _ => throw new ArgumentOutOfRangeException(nameof(version)),
             };
             store.Init(cfg);
@@ -2093,9 +2088,9 @@ public class TestConditionalControlParameters
 
         IFhirStore store = version switch
         {
-            FhirReleases.FhirSequenceCodes.R4 => new candleR4::FhirCandle.Storage.VersionedFhirStore(),
-            FhirReleases.FhirSequenceCodes.R4B => new candleR4B::FhirCandle.Storage.VersionedFhirStore(),
-            FhirReleases.FhirSequenceCodes.R5 => new candleR5::FhirCandle.Storage.VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R4 => new VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R4B => new VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R5 => new VersionedFhirStore(),
             _ => throw new ArgumentOutOfRangeException(nameof(version)),
         };
         store.Init(cfg);

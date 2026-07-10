@@ -1,19 +1,16 @@
-extern alias candleR4;
-extern alias coreR4;
-
 using System.Net;
-using candleR4::FhirCandle.Storage;
-using Hl7.Fhir.Model;
-using fhir.candle.Tests.Extensions;
+using FhirCandle.Storage;
 using FhirCandle.Utils;
+using fhir.candle.Tests.Extensions;
 using Xunit.Abstractions;
+using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
+using Ignixa.Serialization.SourceNodes;
 using FhirRequestContext = FhirCandle.Models.FhirRequestContext;
 using FhirResponseContext = FhirCandle.Models.FhirResponseContext;
-using Resource = Hl7.Fhir.Model.Resource;
 using TenantConfiguration = FhirCandle.Models.TenantConfiguration;
 using Shouldly;
 using static FhirCandle.Storage.Common;
-using Hl7.Fhir.Serialization;
 
 namespace fhir.candle.Tests;
 
@@ -46,8 +43,7 @@ public class AuthCompartmentTests: IDisposable
     public void TestCompartmentTypeSearch(string json)
     {
         // load compartment
-        var jsonParser = coreR4::Hl7.Fhir.Serialization.FhirJsonDeserializer.OSTRICH;
-        var compartmentDefinition = jsonParser.DeserializeResource(json) as coreR4::Hl7.Fhir.Model.CompartmentDefinition;
+        ResourceJsonNode compartmentDefinition = JsonSourceNodeFactory.Parse(json);
         compartmentDefinition.ShouldNotBeNull();
 
         string path = Path.GetRelativePath(Directory.GetCurrentDirectory(), "data/r4");
@@ -72,7 +68,7 @@ public class AuthCompartmentTests: IDisposable
         versionedFhirStore.Init(config);
 
         // add compartment to store
-        this.putResource(versionedFhirStore, compartmentDefinition!);
+        this.putResource(versionedFhirStore, compartmentDefinition);
 
         // all observations
         var searchAllBundle = SearchResource(versionedFhirStore, "Observation");
@@ -99,7 +95,7 @@ public class AuthCompartmentTests: IDisposable
         compartmentBundleCount.ShouldBe(searchBundleCount);
     }
 
-    private Bundle SearchResource(VersionedFhirStore versionedFhirStore, String search )
+    private BundleJsonNode SearchResource(VersionedFhirStore versionedFhirStore, String search )
     {
         FhirRequestContext ctx = new()
         {
@@ -127,14 +123,13 @@ public class AuthCompartmentTests: IDisposable
         response.SerializedResource.ShouldNotBeNullOrEmpty();
 
         response.Resource.ShouldNotBeNull();
-        var result = response.Resource;
-        result.GetType().ToString().ShouldBe("Hl7.Fhir.Model.Bundle");
+        ResourceJsonNode result = JsonSourceNodeFactory.Parse(response.SerializedResource);
+        result.ResourceType.ShouldBe("Bundle");
 
-        var bundle = result as Bundle;
-        return bundle!;
+        return new BundleJsonNode(result.MutableNode, result.FhirVersion);
     }
 
-    private void putResource(VersionedFhirStore versionedFhirStore, Resource resource)
+    private void putResource(VersionedFhirStore versionedFhirStore, ResourceJsonNode resource)
     {
         FhirRequestContext ctx = new FhirRequestContext
         {

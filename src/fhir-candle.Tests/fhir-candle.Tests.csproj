@@ -17,10 +17,6 @@
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 			<PrivateAssets>all</PrivateAssets>
 		</PackageReference>
-		<PackageReference Include="Hl7.Fhir.R4" Version="6.2.1" Aliases="coreR4" />
-		<PackageReference Include="Hl7.Fhir.R4B" Version="6.2.1" Aliases="coreR4B" />
-		<PackageReference Include="Hl7.Fhir.R5" Version="6.2.1" Aliases="coreR5" />
-		<PackageReference Include="Hl7.Fhir.R6" Version="6.2.1" Aliases="coreR6" />
         <PackageReference Include="System.CommandLine" Version="2.0.9" />
         <PackageReference Include="System.CommandLine.NamingConventionBinder" Version="2.0.0-beta5.25306.1" />
 	</ItemGroup>
@@ -41,32 +37,7 @@
 		<ProjectReference Include="..\FhirCandle.Ui.R4\FhirCandle.Ui.R4.csproj" />
 		<ProjectReference Include="..\FhirStore.Common\FhirCandle.Common.csproj" />
 		<ProjectReference Include="..\fhir-candle\fhir-candle.csproj" />
-		<ProjectReference Include="..\FhirStore.R4\FhirCandle.R4.csproj" />
-		<ProjectReference Include="..\FhirStore.R4B\FhirCandle.R4B.csproj" />
-		<ProjectReference Include="..\FhirStore.R5\FhirCandle.R5.csproj" />
 	</ItemGroup>
-	<Target Name="AddPackageAliases" BeforeTargets="ResolveReferences" Outputs="%(PackageReference.Identity)">
-		<ItemGroup>
-			<ReferencePath Condition="'%(FileName)'=='FhirCandle.R4'">
-				<Aliases>candleR4</Aliases>
-			</ReferencePath>
-			<ReferencePath Condition="'%(FileName)'=='FhirCandle.R4B'">
-				<Aliases>candleR4B</Aliases>
-			</ReferencePath>
-			<ReferencePath Condition="'%(FileName)'=='FhirCandle.R5'">
-				<Aliases>candleR5</Aliases>
-			</ReferencePath>
-			<!--<ReferencePath Condition="'%(FileName)'=='Hl7.Fhir.R4.Core'">
-            <Aliases>coreR4</Aliases>
-        </ReferencePath>
-        <ReferencePath Condition="'%(FileName)'=='Hl7.Fhir.R4B.Core'">
-            <Aliases>coreR4B</Aliases>
-        </ReferencePath>
-        <ReferencePath Condition="'%(FileName)'=='Hl7.Fhir.R5.Core'">
-            <Aliases>coreR5</Aliases>
-        </ReferencePath>-->
-		</ItemGroup>
-	</Target>
 	<ItemGroup>
 		<None Remove="data\common\" />
 	</ItemGroup>

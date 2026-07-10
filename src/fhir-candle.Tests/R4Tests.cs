@@ -3,21 +3,19 @@
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
-extern alias candleR4;
-extern alias coreR4;
-
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
 using fhir.candle.Tests.Models;
 using System.Text.Json;
 using Xunit.Abstractions;
-using candleR4::FhirCandle.Storage;
 using fhir.candle.Tests.Extensions;
 using Shouldly;
 using System.Net;
-using Hl7.FhirPath;
 using fhir.candle.Services;
+using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
+using Ignixa.Serialization.SourceNodes;
 using static FhirCandle.Storage.Common;
 
 namespace fhir.candle.Tests;
@@ -1096,25 +1094,10 @@ public class R4TestConditionals : IClassFixture<R4Tests>
             throw new ArgumentNullException(nameof(id));
         }
 
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
-            json,
-            "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
-            out _);
+        ResourceJsonNode r = JsonSourceNodeFactory.Parse(json);
+        r.MutableNode["id"] = id;
 
-        if (sc != HttpStatusCode.OK)
-        {
-            throw new ArgumentException($"Could not deserialize json: {json}");
-        }
-
-        if (r is null)
-        {
-            throw new ArgumentException($"Could not deserialize json: {json}");
-        }
-
-        r.Id = id;
-
-        return candleR4.FhirCandle.Serialization.SerializationUtils.SerializeFhir(r, "application/fhir+json", false);
+        return r.SerializeToString();
     }
 
     /// <summary>Conditional create no match.</summary>
@@ -1154,15 +1137,15 @@ public class R4TestConditionals : IClassFixture<R4Tests>
         response.LastModified.ShouldNotBeNullOrEmpty();
         response.Location.ShouldContain($"{resourceType}/{id}");
 
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             response.SerializedResource,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe(resourceType);
+        r!.ResourceType.ShouldBe(resourceType);
         r!.Id.ShouldBe(id);
     }
 
@@ -1222,15 +1205,15 @@ public class R4TestConditionals : IClassFixture<R4Tests>
         response.LastModified.ShouldNotBeNullOrEmpty();
         response.Location.ShouldContain($"{resourceType}/{id}");
 
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             response.SerializedResource,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe(resourceType);
+        r!.ResourceType.ShouldBe(resourceType);
         r!.Id.ShouldBe(id);
     }
 
@@ -1272,15 +1255,15 @@ public class R4TestConditionals : IClassFixture<R4Tests>
         response.LastModified.ShouldNotBeNullOrEmpty();
         response.Location.ShouldContain($"{resourceType}/{id1}");
 
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             response.SerializedResource,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe(resourceType);
+        r!.ResourceType.ShouldBe(resourceType);
         r!.Id.ShouldBe(id1);
 
         ctx = ctx with
@@ -1394,25 +1377,10 @@ public class R4TestConditionalUpdates : IClassFixture<R4Tests>
             throw new ArgumentNullException(nameof(id));
         }
 
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
-            json,
-            "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
-            out _);
+        ResourceJsonNode r = JsonSourceNodeFactory.Parse(json);
+        r.MutableNode["id"] = id;
 
-        if (sc != HttpStatusCode.OK)
-        {
-            throw new ArgumentException($"Could not deserialize json: {json}");
-        }
-
-        if (r is null)
-        {
-            throw new ArgumentException($"Could not deserialize json: {json}");
-        }
-
-        r.Id = id;
-
-        return candleR4.FhirCandle.Serialization.SerializationUtils.SerializeFhir(r, "application/fhir+json", false);
+        return r.SerializeToString();
     }
 
     /// <summary>Conditional update with no match creates the resource.</summary>
@@ -1751,25 +1719,10 @@ public class R4TestConditionalCreateViaUrlQuery : IClassFixture<R4Tests>
             throw new ArgumentNullException(nameof(id));
         }
 
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
-            json,
-            "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
-            out _);
+        ResourceJsonNode r = JsonSourceNodeFactory.Parse(json);
+        r.MutableNode["id"] = id;
 
-        if (sc != HttpStatusCode.OK)
-        {
-            throw new ArgumentException($"Could not deserialize json: {json}");
-        }
-
-        if (r is null)
-        {
-            throw new ArgumentException($"Could not deserialize json: {json}");
-        }
-
-        r.Id = id;
-
-        return candleR4.FhirCandle.Serialization.SerializationUtils.SerializeFhir(r, "application/fhir+json", false);
+        return r.SerializeToString();
     }
 
     /// <summary>Conditional create via URL query with no match creates the resource.</summary>
@@ -2223,17 +2176,17 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
     [FileData("data/r4/Basic-topic-encounter-complete.json")]
     public void ParseTopic(string json)
     {
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe("Basic");
+        r!.ResourceType.ShouldBe("Basic");
 
-        candleR4.FhirCandle.Subscriptions.TopicConverter converter = new candleR4.FhirCandle.Subscriptions.TopicConverter();
+        FhirCandle.Subscriptions.TopicConverter converter = new(FhirReleases.FhirSequenceCodes.R4);
 
         bool success = converter.TryParse(r, out ParsedSubscriptionTopic s);
 
@@ -2254,17 +2207,17 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
     [FileData("data/r4/Subscription-encounter-complete.json")]
     public void ParseSubscription(string json)
     {
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe("Subscription");
+        r!.ResourceType.ShouldBe("Subscription");
 
-        candleR4.FhirCandle.Subscriptions.SubscriptionConverter converter = new candleR4.FhirCandle.Subscriptions.SubscriptionConverter(10);
+        FhirCandle.Subscriptions.SubscriptionConverter converter = new(FhirReleases.FhirSequenceCodes.R4, 10);
 
         bool success = converter.TryParse(r, out ParsedSubscription s);
 
@@ -2286,17 +2239,18 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
     [FileData("data/r4/Bundle-notification-handshake.json")]
     public void ParseHandshake(string json)
     {
-        HttpStatusCode sc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe("Bundle");
+        r!.ResourceType.ShouldBe("Bundle");
 
-        ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle((Hl7.Fhir.Model.Bundle)r);
+        BundleJsonNode notificationBundle = new BundleJsonNode(r.MutableNode, r.FhirVersion);
+        ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle(notificationBundle);
 
         s.ShouldNotBeNull();
         s!.BundleId.ShouldBe("64578ab3-2bf6-497a-a873-7c29fa2090d6");
@@ -2331,7 +2285,7 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
         bool deleteResult)
     {
         VersionedFhirStore store = ((VersionedFhirStore)_fixture._store);
-        ResourceStore<coreR4.Hl7.Fhir.Model.Encounter> rs = (ResourceStore<coreR4.Hl7.Fhir.Model.Encounter>)_fixture._store["Encounter"];
+        ResourceStore rs = (ResourceStore)_fixture._store["Encounter"];
 
         string resourceType = "Encounter";
         string topicId = "test-topic";
@@ -2386,16 +2340,10 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
         store.StoreProcessSubscriptionTopic(topic, false);
         store.StoreProcessSubscription(subscription, false);
 
-        coreR4.Hl7.Fhir.Model.Encounter previous = new()
-        {
-            Id = "object-under-test",
-            Status = coreR4.Hl7.Fhir.Model.Encounter.EncounterStatus.Planned,
-        };
-        coreR4.Hl7.Fhir.Model.Encounter current = new()
-        {
-            Id = "object-under-test",
-            Status = coreR4.Hl7.Fhir.Model.Encounter.EncounterStatus.Finished,
-        };
+        ResourceJsonNode previous = JsonSourceNodeFactory.Parse(
+            """{"resourceType":"Encounter","id":"object-under-test","status":"planned"}""");
+        ResourceJsonNode current = JsonSourceNodeFactory.Parse(
+            """{"resourceType":"Encounter","id":"object-under-test","status":"finished"}""");
 
         // test create current
         if (onCreate)
@@ -2468,17 +2416,17 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
     [FileData("data/r4/Bundle-notification-handshake.json")]
     public void SubscriptionHookDuplicateBundleCreateFailureReturnsFailure(string json)
     {
-        HttpStatusCode parseSc = candleR4.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode parseSc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? parsed,
+            out ResourceJsonNode? parsed,
             out _);
 
         parseSc.ShouldBe(HttpStatusCode.OK);
         parsed.ShouldNotBeNull();
-        parsed!.ShouldBeOfType<Hl7.Fhir.Model.Bundle>();
+        parsed!.ResourceType.ShouldBe("Bundle");
 
-        Hl7.Fhir.Model.Bundle bundle = (Hl7.Fhir.Model.Bundle)parsed;
+        BundleJsonNode bundle = new BundleJsonNode(parsed.MutableNode, parsed.FhirVersion);
         bundle.Id = "hook-dup-handshake";
 
         VersionedFhirStore versionedStore = (VersionedFhirStore)_fixture._store;

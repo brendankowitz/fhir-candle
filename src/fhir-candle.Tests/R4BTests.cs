@@ -3,9 +3,6 @@
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
-extern alias candleR4B;
-extern alias coreR4B;
-
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
@@ -13,9 +10,11 @@ using fhir.candle.Tests.Models;
 using Shouldly;
 using System.Text.Json;
 using Xunit.Abstractions;
-using candleR4B::FhirCandle.Storage;
 using fhir.candle.Tests.Extensions;
 using System.Net;
+using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
+using Ignixa.Serialization.SourceNodes;
 
 namespace fhir.candle.Tests;
 
@@ -1045,16 +1044,16 @@ public class R4BTestSubscriptions : IClassFixture<R4BTests>
     [FileData("data/r4b/SubscriptionTopic-encounter-complete-qualified.json")]
     public void ParseTopic(string json)
     {
-        HttpStatusCode sc = candleR4B.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe("SubscriptionTopic");
-        candleR4B.FhirCandle.Subscriptions.TopicConverter converter = new candleR4B.FhirCandle.Subscriptions.TopicConverter();
+        r!.ResourceType.ShouldBe("SubscriptionTopic");
+        FhirCandle.Subscriptions.TopicConverter converter = new(FhirReleases.FhirSequenceCodes.R4B);
 
         bool success = converter.TryParse(r, out ParsedSubscriptionTopic s);
 
@@ -1075,16 +1074,16 @@ public class R4BTestSubscriptions : IClassFixture<R4BTests>
     [FileData("data/r4b/Subscription-encounter-complete.json")]
     public void ParseSubscription(string json)
     {
-        HttpStatusCode sc = candleR4B.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe("Subscription");
-        candleR4B.FhirCandle.Subscriptions.SubscriptionConverter converter = new candleR4B.FhirCandle.Subscriptions.SubscriptionConverter(10);
+        r!.ResourceType.ShouldBe("Subscription");
+        FhirCandle.Subscriptions.SubscriptionConverter converter = new(FhirReleases.FhirSequenceCodes.R4B, 10);
 
         bool success = converter.TryParse(r, out ParsedSubscription s);
 
@@ -1107,17 +1106,18 @@ public class R4BTestSubscriptions : IClassFixture<R4BTests>
     [FileData("data/r4b/Bundle-notification-handshake.json")]
     public void ParseHandshake(string json)
     {
-        HttpStatusCode sc = candleR4B.FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
+        HttpStatusCode sc = FhirCandle.Serialization.SerializationUtils.TryDeserializeFhir(
             json,
             "application/fhir+json",
-            out Hl7.Fhir.Model.Resource? r,
+            out ResourceJsonNode? r,
             out _);
 
         sc.ShouldBe(HttpStatusCode.OK);
         r.ShouldNotBeNull();
-        r!.TypeName.ShouldBe("Bundle");
+        r!.ResourceType.ShouldBe("Bundle");
 
-        ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle((Hl7.Fhir.Model.Bundle)r);
+        BundleJsonNode notificationBundle = new BundleJsonNode(r.MutableNode, r.FhirVersion);
+        ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle(notificationBundle);
 
         s.ShouldNotBeNull();
         s!.BundleId.ShouldBe("24dd1ba8-d569-418f-96d8-e304433f9424");
@@ -1152,7 +1152,7 @@ public class R4BTestSubscriptions : IClassFixture<R4BTests>
         bool deleteResult)
     {
         VersionedFhirStore store = ((VersionedFhirStore)_fixture._store);
-        ResourceStore<coreR4B.Hl7.Fhir.Model.Encounter> rs = (ResourceStore<coreR4B.Hl7.Fhir.Model.Encounter>)_fixture._store["Encounter"];
+        ResourceStore rs = (ResourceStore)_fixture._store["Encounter"];
 
         string resourceType = "Encounter";
         string topicId = "test-topic";
@@ -1207,16 +1207,10 @@ public class R4BTestSubscriptions : IClassFixture<R4BTests>
         store.StoreProcessSubscriptionTopic(topic, false);
         store.StoreProcessSubscription(subscription, false);
 
-        coreR4B.Hl7.Fhir.Model.Encounter previous = new()
-        {
-            Id = "object-under-test",
-            Status = coreR4B.Hl7.Fhir.Model.Encounter.EncounterStatus.Planned,
-        };
-        coreR4B.Hl7.Fhir.Model.Encounter current = new()
-        {
-            Id = "object-under-test",
-            Status = coreR4B.Hl7.Fhir.Model.Encounter.EncounterStatus.Finished,
-        };
+        ResourceJsonNode previous = JsonSourceNodeFactory.Parse(
+            """{"resourceType":"Encounter","id":"object-under-test","status":"planned"}""");
+        ResourceJsonNode current = JsonSourceNodeFactory.Parse(
+            """{"resourceType":"Encounter","id":"object-under-test","status":"finished"}""");
 
         // test create current
         if (onCreate)

@@ -3,10 +3,6 @@
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
 
-extern alias candleR4;
-extern alias candleR4B;
-extern alias candleR5;
-
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
@@ -52,9 +48,9 @@ public class StrictSearchHandlingTests
 
         IFhirStore store = version switch
         {
-            FhirReleases.FhirSequenceCodes.R4 => new candleR4::FhirCandle.Storage.VersionedFhirStore(),
-            FhirReleases.FhirSequenceCodes.R4B => new candleR4B::FhirCandle.Storage.VersionedFhirStore(),
-            FhirReleases.FhirSequenceCodes.R5 => new candleR5::FhirCandle.Storage.VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R4 => new VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R4B => new VersionedFhirStore(),
+            FhirReleases.FhirSequenceCodes.R5 => new VersionedFhirStore(),
             _ => throw new ArgumentOutOfRangeException(nameof(version)),
         };
         store.Init(cfg);

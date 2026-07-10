@@ -1,17 +1,12 @@
-﻿extern alias candleR4;
-extern alias coreR4;
-
-using FhirCandle.Models;
+﻿using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
 using fhir.candle.Tests.Models;
 using System.Text.Json;
 using Xunit.Abstractions;
-using candleR4::FhirCandle.Storage;
 using fhir.candle.Tests.Extensions;
 using Shouldly;
 using System.Net;
-using Hl7.FhirPath;
 using fhir.candle.Services;
 using static FhirCandle.Storage.Common;
 
