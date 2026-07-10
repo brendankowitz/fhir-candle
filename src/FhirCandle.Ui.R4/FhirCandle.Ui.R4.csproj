@@ -15,7 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\FhirCandle.Ui.Common\FhirCandle.Ui.Common.csproj" />
     <ProjectReference Include="..\FhirStore.Common\FhirCandle.Common.csproj" />
-    <ProjectReference Include="..\FhirStore.R4\FhirCandle.R4.csproj" />
+    <ProjectReference Include="..\FhirCandle.Engine\FhirCandle.Engine.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Components\Pickers\" />

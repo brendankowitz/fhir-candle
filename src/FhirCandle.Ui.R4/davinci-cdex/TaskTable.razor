@@ -1,6 +1,7 @@
-﻿@using Microsoft.FluentUI.AspNetCore.Components;
-@using Hl7.Fhir.Utility;
-@using static Hl7.Fhir.Model.BaseExtensions;
+@using Microsoft.FluentUI.AspNetCore.Components;
+@using System.Text.Json.Nodes;
+@using Ignixa.Serialization;
+@using Ignixa.Serialization.SourceNodes;
 
 @inject IHttpContextAccessor HttpContextAccessor
 
@@ -10,7 +11,7 @@
     <PropertyColumn Title="Id" Property="@(t => t.Id)" Sortable="true" Filtered="!string.IsNullOrWhiteSpace(IdFilter)" Tooltip="true"  IsDefaultSortColumn="true">
         <ColumnOptions>
             <div class="search-box">
-                <FluentSearch 
+                <FluentSearch
                     Autofocus="true"
                     @bind-Value="IdFilter"
                               @bind-Value:after="HandleFilterClear"
@@ -20,7 +21,7 @@
         </ColumnOptions>
     </PropertyColumn>
 
-    <PropertyColumn Title="Status" Property="@(t => t.Status.GetLiteral())" Sortable="true" Filtered="!string.IsNullOrWhiteSpace(StatusFilter)" Tooltip="true">
+    <PropertyColumn Title="Status" Property="@(t => t.Status)" Sortable="true" Filtered="!string.IsNullOrWhiteSpace(StatusFilter)" Tooltip="true">
         <ColumnOptions>
             <div class="search-box">
                 <FluentSearch Autofocus="true"
@@ -32,7 +33,7 @@
         </ColumnOptions>
     </PropertyColumn>
 
-    <PropertyColumn Title="Code" Property="@(t => string.Join(',', t.Code!.Coding.Select(c => c.Code)))" Sortable="true" Filtered="!string.IsNullOrWhiteSpace(CodeFilter)" Tooltip="true">
+    <PropertyColumn Title="Code" Property="@(t => t.Code)" Sortable="true" Filtered="!string.IsNullOrWhiteSpace(CodeFilter)" Tooltip="true">
         <ColumnOptions>
             <div class="search-box">
                 <FluentSearch Autofocus="true"
@@ -59,6 +60,8 @@
 </FluentDataGrid>
 
 @code {
+    private sealed record TaskRow(string Id, string Status, string Code);
+
     private System.Timers.Timer? debounceTimer = null;
 
     private string _codeFilter = string.Empty;
@@ -118,16 +121,29 @@
     [Parameter]
     public IFhirStore Store { get; set; } = null!;
 
-    private IQueryable<Hl7.Fhir.Model.Task>? _filteredItems = null;
+    private IQueryable<TaskRow>? _filteredItems = null;
 
-    private IQueryable<Hl7.Fhir.Model.Task>? FilteredItems => _filteredItems;
+    private IQueryable<TaskRow>? FilteredItems => _filteredItems;
 
     /// <summary>The task store.</summary>
     private IResourceStore? _taskStore = null;
 
+    private static TaskRow ToRow(ResourceJsonNode node)
+    {
+        JsonObject json = node.MutableNode;
+
+        string status = json["status"]?.GetValue<string>() ?? string.Empty;
+
+        string code = json["code"]?["coding"] is JsonArray coding
+            ? string.Join(',', coding.Select(c => c?["code"]?.GetValue<string>()).Where(c => c is not null))
+            : string.Empty;
+
+        return new TaskRow(node.Id, status, code);
+    }
+
     /// <summary>Gets filtered items.</summary>
     /// <returns>The filtered items.</returns>
-    private IQueryable<Hl7.Fhir.Model.Task>? GetFilteredItems()
+    private IQueryable<TaskRow>? GetFilteredItems()
     {
         if ((_taskStore is null) ||
             (!_taskStore.Any()))
@@ -135,25 +151,22 @@
             return null;
         }
 
+        IEnumerable<TaskRow> rows = _taskStore.Values.Select(o => ToRow((ResourceJsonNode)o));
+
         // check for no filters
         if (string.IsNullOrWhiteSpace(_idFilter) &&
             string.IsNullOrWhiteSpace(_statusFilter) &&
             string.IsNullOrWhiteSpace(_codeFilter))
         {
-            return _taskStore
-                .Values
-                .Select(o => (Hl7.Fhir.Model.Task)o)
-                .AsQueryable<Hl7.Fhir.Model.Task>();
+            return rows.AsQueryable();
         }
 
         // apply filters
-        return _taskStore
-            .Values
-            .Select(o => (Hl7.Fhir.Model.Task)o)
-            .Where(r => string.IsNullOrWhiteSpace(_idFilter) ? true : r.Id!.Contains(_idFilter, StringComparison.OrdinalIgnoreCase))
-            .Where(r => string.IsNullOrWhiteSpace(_statusFilter) ? true : r.Status?.GetLiteral()?.Contains(_statusFilter, StringComparison.OrdinalIgnoreCase) ?? false)
-            .Where(r => string.IsNullOrWhiteSpace(_codeFilter) ? true : r.Code?.Coding?.Any(c => c.Code!.Contains(StatusFilter, StringComparison.OrdinalIgnoreCase)) ?? false)
-            .AsQueryable<Hl7.Fhir.Model.Task>();
+        return rows
+            .Where(r => string.IsNullOrWhiteSpace(_idFilter) || r.Id.Contains(_idFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(r => string.IsNullOrWhiteSpace(_statusFilter) || r.Status.Contains(_statusFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(r => string.IsNullOrWhiteSpace(_codeFilter) || r.Code.Contains(_codeFilter, StringComparison.OrdinalIgnoreCase))
+            .AsQueryable();
     }
 
     /// <summary>Executes the search action.</summary>
@@ -203,36 +216,34 @@
     }
 
     /// <summary>Sets the status.</summary>
-    /// <param name="task">  The task to update.</param>
+    /// <param name="row">   The task row to update.</param>
     /// <param name="status">The status.</param>
-    private void SetTaskStatus(Hl7.Fhir.Model.Task? task, string status)
+    private void SetTaskStatus(TaskRow? row, string status)
     {
-        if ((task is null) ||
-            string.IsNullOrEmpty(task.Id) || 
+        if ((row is null) ||
+            string.IsNullOrEmpty(row.Id) ||
             string.IsNullOrEmpty(status) ||
             (_taskStore is null))
         {
             return;
         }
 
-        Hl7.Fhir.Model.Task.TaskStatus? ts = Hl7.Fhir.Utility.EnumUtility.ParseLiteral<Hl7.Fhir.Model.Task.TaskStatus>(status);
-
-        if (ts is null)
+        if (!_taskStore.TryGetValue(row.Id, out object? existing) ||
+            existing is not ResourceJsonNode node)
         {
             return;
         }
-        
-        // we want to store a new copy of the task so that events and subscriptions trigger (not update inline)
-        // this is only an issue because we are pulling our list directly from the store instead of using a query to copy
-        Hl7.Fhir.Model.Task t = (Hl7.Fhir.Model.Task)task.DeepCopy();
 
-        t.Status = ts;
+        // store a new copy of the task so that events and subscriptions trigger (not update inline);
+        // this is only an issue because we pull our list directly from the store instead of via a query
+        JsonObject updated = (JsonObject)node.MutableNode.DeepClone();
+        updated["status"] = status;
 
-        FhirRequestContext ctx = new(Store, "PUT", $"Task/{t.Id}", t);
+        FhirRequestContext ctx = new(Store, "PUT", $"Task/{row.Id}", JsonSourceNodeFactory.Parse(updated));
 
         if (!Store.InstanceUpdate(ctx, out _))
         {
-            Console.WriteLine($"Error updating Task/{t.Id}!");
+            Console.WriteLine($"Error updating Task/{row.Id}!");
         }
 
         // reload results to see the changed value

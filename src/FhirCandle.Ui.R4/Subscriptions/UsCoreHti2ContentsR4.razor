@@ -1,5 +1,6 @@
 ﻿@using Microsoft.FluentUI.AspNetCore.Components;
-@using Hl7.Fhir.Utility;
+@using System.Text.Json.Nodes;
+@using Ignixa.Serialization.SourceNodes;
 
 @inject IHttpContextAccessor HttpContextAccessor
 
@@ -9,13 +10,13 @@
     <FluentAccordionItem Heading="Patient Selection" Expanded="true">
          <FluentAutocomplete Id="patient-selector"
                 @ref="PatientSelector"
-                TOption="Hl7.Fhir.Model.Patient"
+                TOption="PatientRow"
                 Width="100%"
                 Placeholder="search"
                 MaximumSelectedOptions="1"
                 KeepOpen="false"
                 OnOptionsSearch="@OnPatientSearch"
-                OptionText="@(item => displayFor(item))"
+                OptionText="@(item => item.Display)"
                 OptionStyle="min-height: 40px;"
                 @bind-SelectedOptions="@SelectedPatients">
             <LabelTemplate>
@@ -23,10 +24,10 @@
                 <FluentIcon Value="@(new Icons.Regular.Size20.Person())" Style="margin: 0 4px;" />
             </LabelTemplate>
             <SelectedOptionTemplate>
-                <FluentPersona Name="@(displayFor(context))"
+                <FluentPersona Name="@context.Display"
                         Style="height: 26px; background: var(--neutral-fill-secondary-hover)"
                         ImageSize="24px"
-                        Initials="@(getInitials(context.Name))"
+                        Initials="@context.Initials"
                         DismissTitle="Remove"
                         Status="PresenceStatus.Available"
                         OnDismissClick="@(async () => SelectedPatients = [])" />
@@ -34,10 +35,10 @@
             <OptionTemplate>
                 <FluentPersona
                     ImageSize="32px"
-                    Initials="@(getInitials(context.Name))"
+                    Initials="@context.Initials"
                     Status="PresenceStatus.Available"
                     StatusSize="PresenceBadgeSize.Small"
-                    Name="@(displayFor(context))" />
+                    Name="@context.Display" />
             </OptionTemplate>
             <MaximumSelectedOptionsMessage>
                 Only one patient can be selected.
@@ -75,7 +76,7 @@
                     MaximumSelectedOptions="1"
                     KeepOpen="false"
                     OnOptionsSearch="@OnSubscriptionSearch"
-                    OptionText="@(item => displayFor(item))"
+                    OptionText="@(item => DisplayForSubscription(item))"
                     OptionStyle="min-height: 40px;"
                     @bind-SelectedOptions="@SelectedSubscriptions">
                 <MaximumSelectedOptionsMessage>
@@ -235,10 +236,12 @@
     // private IResourceStore? _observationStore = null;
     // private IResourceStore? _documentReferenceStore = null;
 
-    private FluentAutocomplete<Hl7.Fhir.Model.Patient> PatientSelector = default!;
+    private FluentAutocomplete<PatientRow> PatientSelector = default!;
 
-    private Hl7.Fhir.Model.Patient[] _selectedPatients = [];
-    private IEnumerable<Hl7.Fhir.Model.Patient> SelectedPatients
+    private sealed record PatientRow(string Id, string Display, string Initials);
+
+    private PatientRow[] _selectedPatients = [];
+    private IEnumerable<PatientRow> SelectedPatients
     {
         get => _selectedPatients;
         set
@@ -398,7 +401,7 @@
         // _filteredItems = GetFilteredItems();
     }
 
-    private void OnPatientSearch(OptionsSearchEventArgs<Hl7.Fhir.Model.Patient> e)
+    private void OnPatientSearch(OptionsSearchEventArgs<PatientRow> e)
     {
         if (_patientStore is null)
         {
@@ -406,12 +409,18 @@
             return;
         }
 
+        IEnumerable<PatientRow> rows = _patientStore.Values.Select(o => ToPatientRow((ResourceJsonNode)o));
+
         if (string.IsNullOrEmpty(e.Text))
         {
-            e.Items = ((IEnumerable<Hl7.Fhir.Model.Patient>)_patientStore.Values).OrderBy(o => o.Id);
+            e.Items = rows.OrderBy(o => o.Id);
+            return;
         }
 
-        e.Items = ((IEnumerable<Hl7.Fhir.Model.Patient>)_patientStore.Values).Where(o => testForSearch(e.Text, o)).OrderBy(o => o.Id);
+        e.Items = rows
+            .Where(r => r.Id.Contains(e.Text, StringComparison.OrdinalIgnoreCase) ||
+                        r.Display.Contains(e.Text, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(o => o.Id);
     }
 
     private void OnSubscriptionSearch(OptionsSearchEventArgs<ParsedSubscription> e)
@@ -438,135 +447,42 @@
 
         if (string.IsNullOrEmpty(_userTag))
         {
-            e.Items = Store.CurrentSubscriptions.Where(o => testForSearch(e.Text, o)).OrderBy(o => o.Id);
+            e.Items = Store.CurrentSubscriptions.Where(o => SubscriptionMatches(e.Text, o)).OrderBy(o => o.Id);
             return;
         }
 
-        e.Items = Store.CurrentSubscriptions.Where(o => o.Tags.Contains(tagCoding) && testForSearch(e.Text, o)).OrderBy(o => o.Id);
+        e.Items = Store.CurrentSubscriptions.Where(o => o.Tags.Contains(tagCoding) && SubscriptionMatches(e.Text, o)).OrderBy(o => o.Id);
         return;
     }
 
-    private string getInitials(IEnumerable<Hl7.Fhir.Model.HumanName> names)
+    private static PatientRow ToPatientRow(ResourceJsonNode node)
     {
-        Hl7.Fhir.Model.HumanName? name = names.FirstOrDefault();
+        JsonObject? firstName = (node.MutableNode["name"] as JsonArray)?.FirstOrDefault() as JsonObject;
 
-        if (name is null)
-        {
-            return string.Empty;
-        }
+        string family = firstName?["family"]?.GetValue<string>() ?? string.Empty;
 
-        return string.Join("", name.Given.Select(gn => gn?.FirstOrDefault().ToString() ?? string.Empty)) +
-            name.Family?.FirstOrDefault().ToString() ?? string.Empty;
+        string[] given = (firstName?["given"] as JsonArray)?
+            .Select(g => g?.GetValue<string>() ?? string.Empty)
+            .Where(g => g.Length > 0)
+            .ToArray() ?? [];
+
+        string display = $"{node.Id}: {family}, {string.Join(' ', given)}";
+
+        string initials =
+            string.Concat(given.Select(g => g[0].ToString())) +
+            (family.Length > 0 ? family[0].ToString() : string.Empty);
+
+        return new PatientRow(node.Id, display, initials);
     }
 
-    private bool testForSearch(string text, object o)
-    {
-        if (o is null)
-        {
-            return false;
-        }
+    private static string DisplayForSubscription(ParsedSubscription s) =>
+        $"{s.Id}: {s.Endpoint} ({s.CurrentStatus})";
 
-        switch (o)
-        {
-            case Hl7.Fhir.Model.Patient p:
-                return
-                    p.Id!.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                    p.Name.Any(n => (n.Family?.StartsWith(text, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                                    n.Given.Any(g => g?.StartsWith(text, StringComparison.OrdinalIgnoreCase) ?? false));
-
-            case ParsedSubscription parsedSubscription:
-                return
-                    parsedSubscription.Id.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                    parsedSubscription.Reason.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                    parsedSubscription.Endpoint.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                    parsedSubscription.CurrentStatus.Contains(text, StringComparison.OrdinalIgnoreCase);
-        }
-
-        return false;
-    }
-
-    private string displayFor(object o)
-    {
-        if (o is null)
-        {
-            return string.Empty;
-        }
-
-        switch (o)
-        {
-            case Hl7.Fhir.Model.Patient p:
-                return $"{p.Id}: {string.Join(", ", p.Name.Select(n => $"{n.Family}, {string.Join(' ', n.Given)}"))}";
-
-            case ParsedSubscription parsedSubscription:
-                return $"{parsedSubscription.Id}: {parsedSubscription.Endpoint} ({parsedSubscription.CurrentStatus})";
-
-            case IEnumerable<Hl7.Fhir.Model.HumanName> hns:
-                return string.Join("; ", hns.Select(hn => $"{hn.Family}, {string.Join(' ', hn.Given)}"));
-
-            case Hl7.Fhir.Model.HumanName hn:
-                return $"{hn.Family}, {string.Join(' ', hn.Given)}";
-
-            case Hl7.Fhir.Model.FhirString s:
-                return s.Value ?? string.Empty;
-
-            case Hl7.Fhir.Model.Code c:
-                return c.Value ?? string.Empty;
-
-            case Hl7.Fhir.Model.Coding coding:
-                return string.IsNullOrEmpty(coding.Display) ? $"{coding.System}|{coding.Code}" : coding.Display;
-
-            case IEnumerable<Hl7.Fhir.Model.Identifier> ids:
-                return string.Join(", ", ids.Select(id => displayFor(id)));
-
-            case Hl7.Fhir.Model.Identifier i:
-                {
-                    if (!string.IsNullOrEmpty(i.System) || !string.IsNullOrEmpty(i.Value))
-                    {
-                        return $"{i.System}|{i.Value}";
-                    }
-
-                    if (i.Type is not null)
-                    {
-                        return displayFor(i.Type);
-                    }
-                }
-                break;
-
-            case Hl7.Fhir.Model.ResourceReference rr:
-                {
-                    if (!string.IsNullOrEmpty(rr.Display))
-                    {
-                        return rr.Display;
-                    }
-
-                    if (!string.IsNullOrEmpty(rr.Reference))
-                    {
-                        return rr.Reference;
-                    }
-
-                    if (rr.Identifier is not null)
-                    {
-                        displayFor(rr.Identifier);
-                    }
-                }
-                break;
-
-            case Hl7.Fhir.Model.CodeableConcept cc:
-                {
-                    if (!string.IsNullOrEmpty(cc.Text))
-                    {
-                        return cc.Text;
-                    }
-
-                    return string.Join(", ", cc.Coding.Select(c => string.IsNullOrEmpty(c.Display) ? $"{c.System}|{c.Code}" : c.Display));
-                }
-
-            case Hl7.Fhir.Model.Resource r:
-                return r.TypeName + "/" + r.Id;
-        }
-
-        return o.ToString() ?? string.Empty;
-    }
+    private static bool SubscriptionMatches(string text, ParsedSubscription s) =>
+        s.Id.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+        s.Reason.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+        s.Endpoint.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+        s.CurrentStatus.Contains(text, StringComparison.OrdinalIgnoreCase);
 
     public void Dispose()
     {
