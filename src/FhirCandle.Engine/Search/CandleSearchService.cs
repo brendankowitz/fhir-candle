@@ -42,6 +42,15 @@ public sealed class CandleSearchService
         _schema = schema;
         Definitions = new SearchParameterDefinitionManager(schema, loggerFactory.CreateLogger<SearchParameterDefinitionManager>());
 
+        // Deliberate opt-out from base-URI reference collapsing, preserving the pre-Ignixa engine's
+        // behavior (absolute references were only ever matched verbatim). A real provider would also
+        // be unsound here: candle indexes at write time with no request context, but its effective
+        // base varies per request via Forwarded headers (VersionedFhirStore.GetBaseUrl), so a provider
+        // built from the one configured TenantConfiguration.BaseUrl would recognize self-references on
+        // some route forms and not others - the route-dependent inconsistency IFhirBaseUriProvider's
+        // contract warns against. Note the in-memory query path already matches a relative reference
+        // query against absolute stored references regardless (Ignixa's InternalOrExternal expression
+        // constrains type and id only), so the common lookup direction does not need the provider.
         _referenceParser = new ReferenceSearchValueParser(schema, NullFhirBaseUriProvider.Instance);
 
         ISearchParameterDefinitionManager.SearchableSearchParameterDefinitionManagerResolver resolver = () => Definitions;
