@@ -7,6 +7,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Serialization;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -79,11 +80,11 @@ public sealed class OpResetStore : IFhirOperation
 
         if (bodyResource is not null && bodyResource.ResourceType == "Parameters")
         {
-            ParametersJsonNode parameters = bodyResource is ParametersJsonNode typed
+            Parameters parameters = bodyResource is Parameters typed
                 ? typed
-                : new ParametersJsonNode(bodyResource.MutableNode, bodyResource.FhirVersion);
+                : new Parameters(bodyResource.MutableNode, bodyResource.FhirVersion);
 
-            ParameterJsonNode? keepConformanceParam = parameters.FindParameter("keep-conformance");
+            ParametersParameter? keepConformanceParam = parameters.FindParameter("keep-conformance");
             JsonNode? value = keepConformanceParam?.GetValue("valueBoolean");
             if (value is not null)
             {

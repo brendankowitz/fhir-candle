@@ -7,6 +7,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using FhirCandle.Models;
 using FhirCandle.Serialization;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -22,13 +23,13 @@ internal static class PasOperationCommon
         ResourceJsonNode? bodyResource,
         string operationLabel,
         string bundleProfileName,
-        [NotNullWhen(true)] out BundleJsonNode? bundle,
+        [NotNullWhen(true)] out Bundle? bundle,
         out FhirResponseContext failureResponse)
     {
         bundle = bodyResource switch
         {
-            BundleJsonNode typed => typed,
-            not null when bodyResource.ResourceType == "Bundle" => new BundleJsonNode(bodyResource.MutableNode, bodyResource.FhirVersion),
+            Bundle typed => typed,
+            not null when bodyResource.ResourceType == "Bundle" => new Bundle(bodyResource.MutableNode, bodyResource.FhirVersion),
             _ => null,
         };
 
@@ -38,7 +39,7 @@ internal static class PasOperationCommon
             return false;
         }
 
-        if (bundle.Type != BundleJsonNode.BundleType.Collection)
+        if (bundle.GetTypeRaw() != "collection")
         {
             failureResponse = Unprocessable($"{operationLabel} {bundleProfileName} SHALL be a `collection`.");
             bundle = null;
@@ -60,6 +61,6 @@ internal static class PasOperationCommon
     {
         StatusCode = HttpStatusCode.UnprocessableEntity,
         Outcome = SerializationUtils.BuildOutcomeForRequest(
-            HttpStatusCode.UnprocessableEntity, diagnostics, OperationOutcomeJsonNode.IssueType.Structure),
+            HttpStatusCode.UnprocessableEntity, diagnostics, OperationOutcomeIssue.IssueTypeCommon.Structure),
     };
 }

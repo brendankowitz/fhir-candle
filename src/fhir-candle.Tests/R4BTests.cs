@@ -1,4 +1,4 @@
-﻿// <copyright file="FhirStoreTestsR4BResource.cs" company="Microsoft Corporation">
+// <copyright file="FhirStoreTestsR4BResource.cs" company="Microsoft Corporation">
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
@@ -12,6 +12,7 @@ using System.Text.Json;
 using Xunit.Abstractions;
 using fhir.candle.Tests.Extensions;
 using System.Net;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -1116,7 +1117,7 @@ public class R4BTestSubscriptions : IClassFixture<R4BTests>
         r.ShouldNotBeNull();
         r!.ResourceType.ShouldBe("Bundle");
 
-        BundleJsonNode notificationBundle = new BundleJsonNode(r.MutableNode, r.FhirVersion);
+        Bundle notificationBundle = new Bundle(r.MutableNode, r.FhirVersion);
         ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle(notificationBundle);
 
         s.ShouldNotBeNull();

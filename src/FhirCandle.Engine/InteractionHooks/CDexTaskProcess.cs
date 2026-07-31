@@ -7,6 +7,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Storage;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -69,8 +70,8 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
         if (resource is null || resource.ResourceType != "Task")
         {
             hookResponse = FailureResponse(
-                OperationOutcomeJsonNode.IssueSeverity.Fatal,
-                OperationOutcomeJsonNode.IssueType.Exception,
+                OperationOutcomeIssue.IssueSeverityCode.Fatal,
+                OperationOutcomeIssue.IssueTypeCommon.Exception,
                 $"Invalid resource type ({ctx.ResourceType}) for this hook (expecting Task).");
             return false;
         }
@@ -81,8 +82,8 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
         if (GetString(task, "status") != "requested" || GetString(task, "intent") != "order")
         {
             hookResponse = FailureResponse(
-                OperationOutcomeJsonNode.IssueSeverity.Information,
-                OperationOutcomeJsonNode.IssueType.Informational,
+                OperationOutcomeIssue.IssueSeverityCode.Information,
+                OperationOutcomeIssue.IssueTypeCommon.Informational,
                 "Task is not in the 'requested' & 'order' state.");
             return false;
         }
@@ -95,8 +96,8 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
         if (dataQueryInputs.Count == 0)
         {
             hookResponse = FailureResponse(
-                OperationOutcomeJsonNode.IssueSeverity.Information,
-                OperationOutcomeJsonNode.IssueType.Informational,
+                OperationOutcomeIssue.IssueSeverityCode.Information,
+                OperationOutcomeIssue.IssueTypeCommon.Informational,
                 "No 'data-query' inputs found.");
             return false;
         }
@@ -110,8 +111,8 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
                     .FirstOrDefault(k => k.StartsWith("value", StringComparison.Ordinal)) ?? "missing";
 
                 hookResponse = FailureResponse(
-                    OperationOutcomeJsonNode.IssueSeverity.Fatal,
-                    OperationOutcomeJsonNode.IssueType.Exception,
+                    OperationOutcomeIssue.IssueSeverityCode.Fatal,
+                    OperationOutcomeIssue.IssueTypeCommon.Exception,
                     $"Invalid 'data-query' input value type ({valueKey}).");
                 return false;
             }
@@ -121,8 +122,8 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
             if (string.IsNullOrEmpty(query))
             {
                 hookResponse = FailureResponse(
-                    OperationOutcomeJsonNode.IssueSeverity.Fatal,
-                    OperationOutcomeJsonNode.IssueType.Exception,
+                    OperationOutcomeIssue.IssueSeverityCode.Fatal,
+                    OperationOutcomeIssue.IssueTypeCommon.Exception,
                     "Invalid 'data-query' input value (empty).");
                 return false;
             }
@@ -134,8 +135,8 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
                 resultBundle.ResourceType != "Bundle")
             {
                 hookResponse = FailureResponse(
-                    OperationOutcomeJsonNode.IssueSeverity.Fatal,
-                    OperationOutcomeJsonNode.IssueType.Exception,
+                    OperationOutcomeIssue.IssueSeverityCode.Fatal,
+                    OperationOutcomeIssue.IssueTypeCommon.Exception,
                     $"Error performing query ({query}).");
                 return false;
             }
@@ -178,16 +179,16 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
                 StatusCode = HttpStatusCode.OK,
                 Resource = opResponse.Resource ?? resource,
                 Outcome = BuildOutcome(
-                    OperationOutcomeJsonNode.IssueSeverity.Information,
-                    OperationOutcomeJsonNode.IssueType.Informational,
+                    OperationOutcomeIssue.IssueSeverityCode.Information,
+                    OperationOutcomeIssue.IssueTypeCommon.Informational,
                     $"Task/{resource.Id} updated."),
             };
             return true;
         }
 
         hookResponse = FailureResponse(
-            OperationOutcomeJsonNode.IssueSeverity.Fatal,
-            OperationOutcomeJsonNode.IssueType.Exception,
+            OperationOutcomeIssue.IssueSeverityCode.Fatal,
+            OperationOutcomeIssue.IssueTypeCommon.Exception,
             $"Error processing Task/{resource.Id}.");
         return false;
     }
@@ -218,23 +219,23 @@ public sealed class CDexTaskProcess : IFhirInteractionHook
     /// <summary>Builds a hook response carrying only an outcome - deliberately no StatusCode, so the
     /// dispatching interaction proceeds normally instead of being short-circuited.</summary>
     private static FhirResponseContext FailureResponse(
-        OperationOutcomeJsonNode.IssueSeverity severity,
-        OperationOutcomeJsonNode.IssueType code,
+        OperationOutcomeIssue.IssueSeverityCode severity,
+        OperationOutcomeIssue.IssueTypeCommon code,
         string diagnostics) => new()
         {
             Outcome = BuildOutcome(severity, code, diagnostics),
         };
 
-    private static OperationOutcomeJsonNode BuildOutcome(
-        OperationOutcomeJsonNode.IssueSeverity severity,
-        OperationOutcomeJsonNode.IssueType code,
+    private static OperationOutcome BuildOutcome(
+        OperationOutcomeIssue.IssueSeverityCode severity,
+        OperationOutcomeIssue.IssueTypeCommon code,
         string diagnostics)
     {
-        var outcome = new OperationOutcomeJsonNode();
-        outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+        var outcome = new OperationOutcome();
+        outcome.Issue.Add(new OperationOutcomeIssue
         {
-            Severity = severity,
-            Code = code,
+            SeverityCode = severity,
+            IssueTypeCode = code,
             Diagnostics = diagnostics,
         });
         return outcome;

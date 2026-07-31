@@ -8,6 +8,7 @@ using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Serialization;
 using Ignixa.Abstractions;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Validation;
@@ -86,10 +87,10 @@ public sealed class OpValidate : IFhirOperation
 
         if (target is null)
         {
-            OperationOutcomeJsonNode shapeOutcome = SerializationUtils.BuildOutcomeForRequest(
+            OperationOutcome shapeOutcome = SerializationUtils.BuildOutcomeForRequest(
                 HttpStatusCode.UnprocessableEntity,
                 "$validate requires a target resource: either an instance focus (URL), a 'resource' parameter inside a Parameters body, or a resource as the request body.",
-                OperationOutcomeJsonNode.IssueType.Invalid);
+                OperationOutcomeIssue.IssueTypeCommon.Invalid);
 
             opResponse = new()
             {
@@ -110,10 +111,10 @@ public sealed class OpValidate : IFhirOperation
 
         if (schema is null)
         {
-            OperationOutcomeJsonNode noSchemaOutcome = SerializationUtils.BuildOutcomeForRequest(
+            OperationOutcome noSchemaOutcome = SerializationUtils.BuildOutcomeForRequest(
                 HttpStatusCode.UnprocessableEntity,
                 $"Unable to resolve a validation schema for resource type {target.ResourceType}.",
-                OperationOutcomeJsonNode.IssueType.NotSupported);
+                OperationOutcomeIssue.IssueTypeCommon.NotSupported);
 
             opResponse = new()
             {
@@ -125,17 +126,17 @@ public sealed class OpValidate : IFhirOperation
         }
 
         ValidationResult result = schema.Validate(element, new ValidationSettings { SkipTerminologyValidation = true });
-        OperationOutcomeJsonNode outcome = result.ToOperationOutcome();
+        OperationOutcome outcome = result.ToOperationOutcome();
 
         // Per FHIR convention, validation issues are conveyed via OperationOutcome issues, not via 4xx
         // status - always 200 once we have a parseable target. Surface an explicit informational issue
         // when the validator found nothing to report, mirroring the old file's "All OK" behavior.
         if (outcome.Issue.Count == 0)
         {
-            outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+            outcome.Issue.Add(new OperationOutcomeIssue
             {
-                Severity = OperationOutcomeJsonNode.IssueSeverity.Information,
-                Code = OperationOutcomeJsonNode.IssueType.Informational,
+                SeverityCode = OperationOutcomeIssue.IssueSeverityCode.Information,
+                IssueTypeCode = OperationOutcomeIssue.IssueTypeCommon.Informational,
                 Diagnostics = "All OK",
             });
         }
@@ -156,25 +157,25 @@ public sealed class OpValidate : IFhirOperation
     /// <summary>Surfaces 'mode' and 'profile' Parameters-body parameters as Information issues -
     /// both are accepted by the operation definition but ignored by this implementation, and callers
     /// should be able to see that without reading the OperationDefinition.</summary>
-    private static void AppendIgnoredParameterIssues(ResourceJsonNode? bodyResource, OperationOutcomeJsonNode outcome)
+    private static void AppendIgnoredParameterIssues(ResourceJsonNode? bodyResource, OperationOutcome outcome)
     {
         if (bodyResource is null || bodyResource.ResourceType != "Parameters")
         {
             return;
         }
 
-        ParametersJsonNode parameters = bodyResource is ParametersJsonNode typed
+        Parameters parameters = bodyResource is Parameters typed
             ? typed
-            : new ParametersJsonNode(bodyResource.MutableNode, bodyResource.FhirVersion);
+            : new Parameters(bodyResource.MutableNode, bodyResource.FhirVersion);
 
         foreach (string name in new[] { "mode", "profile" })
         {
             if (parameters.FindParameter(name) is not null)
             {
-                outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+                outcome.Issue.Add(new OperationOutcomeIssue
                 {
-                    Severity = OperationOutcomeJsonNode.IssueSeverity.Information,
-                    Code = OperationOutcomeJsonNode.IssueType.Informational,
+                    SeverityCode = OperationOutcomeIssue.IssueSeverityCode.Information,
+                    IssueTypeCode = OperationOutcomeIssue.IssueTypeCommon.Informational,
                     Diagnostics = $"Parameter '{name}' is currently ignored by this $validate implementation.",
                 });
             }
@@ -195,9 +196,9 @@ public sealed class OpValidate : IFhirOperation
             return bodyResource;
         }
 
-        ParametersJsonNode parameters = bodyResource is ParametersJsonNode typed
+        Parameters parameters = bodyResource is Parameters typed
             ? typed
-            : new ParametersJsonNode(bodyResource.MutableNode, bodyResource.FhirVersion);
+            : new Parameters(bodyResource.MutableNode, bodyResource.FhirVersion);
 
         return parameters.FindParameter("resource")?.Resource;
     }

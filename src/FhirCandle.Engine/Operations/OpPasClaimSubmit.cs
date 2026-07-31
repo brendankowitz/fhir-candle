@@ -6,6 +6,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using FhirCandle.Models;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -77,19 +78,19 @@ public sealed class OpPasClaimSubmit : IFhirOperation
         out FhirResponseContext opResponse)
     {
         if (!PasOperationCommon.TryGetClaimCollection(
-            bodyResource, "PAS Claim Submit", "PASRequestBundle", out BundleJsonNode? requestBundle, out opResponse))
+            bodyResource, "PAS Claim Submit", "PASRequestBundle", out Bundle? requestBundle, out opResponse))
         {
             return false;
         }
 
-        var responseOutcome = new OperationOutcomeJsonNode { Id = Guid.NewGuid().ToString() };
+        var responseOutcome = new OperationOutcome { Id = Guid.NewGuid().ToString() };
 
         // ensure that the first entry is a claim
         ResourceJsonNode? firstResource = requestBundle.Entry.Count > 0 ? requestBundle.Entry[0].Resource : null;
 
         if (firstResource is null || firstResource.ResourceType != "Claim")
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeJsonNode.IssueType.BusinessRule,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeIssue.IssueTypeCommon.BusinessRule,
                 "First entry in bundle is not a Claim.");
             return false;
         }
@@ -99,28 +100,28 @@ public sealed class OpPasClaimSubmit : IFhirOperation
 
         if (claim["identifier"] is not JsonArray { Count: > 0 })
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeJsonNode.IssueType.Required,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeIssue.IssueTypeCommon.Required,
                 $"Claim {claimId} is missing mandatory `identifier` element.");
             return false;
         }
 
         if (claim["provider"] is null)
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeJsonNode.IssueType.Required,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeIssue.IssueTypeCommon.Required,
                 $"Claim {claimId} is missing mandatory `provider` element.");
             return false;
         }
 
         if (claim["insurance"] is not JsonArray { Count: > 0 })
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeJsonNode.IssueType.Required,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeIssue.IssueTypeCommon.Required,
                 $"Claim {claimId} is missing mandatory `insurance` element.");
             return false;
         }
 
         if (claim["item"] is not JsonArray { Count: > 0 } claimItems)
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeJsonNode.IssueType.Required,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.BadRequest, OperationOutcomeIssue.IssueTypeCommon.Required,
                 $"Claim {claimId} is missing mandatory `item` element.");
             return false;
         }
@@ -128,7 +129,7 @@ public sealed class OpPasClaimSubmit : IFhirOperation
         // store the request bundle (a clone - the original stays available for building the response)
         if (!StoreClone(store, ctx, "Bundle", requestBundle.MutableNode))
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.InternalServerError, OperationOutcomeJsonNode.IssueType.Exception,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.InternalServerError, OperationOutcomeIssue.IssueTypeCommon.Exception,
                 "Failed to store claim request bundle.");
             return false;
         }
@@ -184,7 +185,7 @@ public sealed class OpPasClaimSubmit : IFhirOperation
         // store the claim response locally
         if (!StoreClone(store, ctx, "ClaimResponse", claimResponse))
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.InternalServerError, OperationOutcomeJsonNode.IssueType.Exception,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.InternalServerError, OperationOutcomeIssue.IssueTypeCommon.Exception,
                 "Failed to store claim response.");
             return false;
         }
@@ -197,7 +198,7 @@ public sealed class OpPasClaimSubmit : IFhirOperation
             ["resource"] = claimResponse,
         });
 
-        foreach (BundleComponentJsonNode entry in requestBundle.Entry)
+        foreach (BundleEntry entry in requestBundle.Entry)
         {
             if (entry.Resource?.ResourceType is not ("Organization" or "Patient" or "Coverage"))
             {
@@ -225,15 +226,15 @@ public sealed class OpPasClaimSubmit : IFhirOperation
         // store the claim response bundle
         if (!StoreClone(store, ctx, "Bundle", responseBundleObj))
         {
-            opResponse = FailWith(responseOutcome, HttpStatusCode.InternalServerError, OperationOutcomeJsonNode.IssueType.Exception,
+            opResponse = FailWith(responseOutcome, HttpStatusCode.InternalServerError, OperationOutcomeIssue.IssueTypeCommon.Exception,
                 "Failed to store claim response bundle.");
             return false;
         }
 
-        responseOutcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+        responseOutcome.Issue.Add(new OperationOutcomeIssue
         {
-            Severity = OperationOutcomeJsonNode.IssueSeverity.Information,
-            Code = OperationOutcomeJsonNode.IssueType.Informational,
+            SeverityCode = OperationOutcomeIssue.IssueSeverityCode.Information,
+            IssueTypeCode = OperationOutcomeIssue.IssueTypeCommon.Informational,
             Diagnostics = "Claim request has been accepted and a claim response bundle stored.",
         });
 
@@ -258,12 +259,12 @@ public sealed class OpPasClaimSubmit : IFhirOperation
             out _);
 
     private static FhirResponseContext FailWith(
-        OperationOutcomeJsonNode outcome, HttpStatusCode statusCode, OperationOutcomeJsonNode.IssueType issueType, string diagnostics)
+        OperationOutcome outcome, HttpStatusCode statusCode, OperationOutcomeIssue.IssueTypeCommon issueType, string diagnostics)
     {
-        outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+        outcome.Issue.Add(new OperationOutcomeIssue
         {
-            Severity = OperationOutcomeJsonNode.IssueSeverity.Error,
-            Code = issueType,
+            SeverityCode = OperationOutcomeIssue.IssueSeverityCode.Error,
+            IssueTypeCode = issueType,
             Diagnostics = diagnostics,
         });
 

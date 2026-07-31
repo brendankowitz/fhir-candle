@@ -2,6 +2,7 @@ using System.Net;
 using FhirCandle.Serialization;
 using FhirCandle.Strict;
 using FhirCandle.Utils;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Shouldly;
@@ -34,13 +35,13 @@ public class SerializationUtilsTests
     [Fact]
     public void BuildOutcome_ProducesIssueWithSeverityAndCode()
     {
-        OperationOutcomeJsonNode oo = SerializationUtils.BuildOutcomeForRequest(
+        OperationOutcome oo = SerializationUtils.BuildOutcomeForRequest(
             HttpStatusCode.NotFound, "Resource not found",
-            OperationOutcomeJsonNode.IssueType.NotFound);
+            OperationOutcomeIssue.IssueTypeCommon.NotFound);
         oo.ResourceType.ShouldBe("OperationOutcome");
         oo.Issue.Count.ShouldBe(1);
-        oo.Issue[0].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.NotFound);
-        oo.Issue[0].Diagnostics.ShouldContain("Resource not found");
+        oo.Issue[0].IssueTypeCode.ShouldBe(OperationOutcomeIssue.IssueTypeCommon.NotFound);
+        oo.Issue[0].Diagnostics!.ShouldContain("Resource not found");
     }
 
     [Fact]
@@ -62,14 +63,14 @@ public class SerializationUtilsTests
             "Unknown parameter",
             StrictRuleCode.SearchUnknownParameter,
             FhirReleases.FhirSequenceCodes.R4,
-            OperationOutcomeJsonNode.IssueType.Invalid);
+            OperationOutcomeIssue.IssueTypeCommon.Invalid);
 
         oo.ResourceType.ShouldBe("OperationOutcome");
         oo.Issue.Count.ShouldBe(1);
-        oo.Issue[0].Severity.ShouldBe(OperationOutcomeJsonNode.IssueSeverity.Error);
-        oo.Issue[0].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.Invalid);
-        oo.Issue[0].Diagnostics.ShouldContain("Unknown parameter");
-        oo.Issue[0].Diagnostics.ShouldContain("http://hl7.org/fhir/R4/search.html");
+        oo.Issue[0].SeverityCode.ShouldBe(OperationOutcomeIssue.IssueSeverityCode.Error);
+        oo.Issue[0].IssueTypeCode.ShouldBe(OperationOutcomeIssue.IssueTypeCommon.Invalid);
+        oo.Issue[0].Diagnostics!.ShouldContain("Unknown parameter");
+        oo.Issue[0].Diagnostics!.ShouldContain("http://hl7.org/fhir/R4/search.html");
     }
 
     [Fact]
@@ -77,8 +78,8 @@ public class SerializationUtilsTests
     {
         var issues = new[]
         {
-            (StrictRuleCode.SearchUnknownParameter, "Unknown parameter: status", OperationOutcomeJsonNode.IssueType.Invalid),
-            (StrictRuleCode.SearchMalformedParameter, "Malformed date value", OperationOutcomeJsonNode.IssueType.Value),
+            (StrictRuleCode.SearchUnknownParameter, "Unknown parameter: status", OperationOutcomeIssue.IssueTypeCommon.Invalid),
+            (StrictRuleCode.SearchMalformedParameter, "Malformed date value", OperationOutcomeIssue.IssueTypeCommon.Value),
         };
 
         var oo = SerializationUtils.BuildOutcomeForStrictRules(
@@ -88,18 +89,18 @@ public class SerializationUtilsTests
 
         oo.ResourceType.ShouldBe("OperationOutcome");
         oo.Issue.Count.ShouldBe(2);
-        oo.Issue[0].Severity.ShouldBe(OperationOutcomeJsonNode.IssueSeverity.Error);
-        oo.Issue[0].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.Invalid);
-        oo.Issue[0].Diagnostics.ShouldContain("Unknown parameter");
-        oo.Issue[1].Severity.ShouldBe(OperationOutcomeJsonNode.IssueSeverity.Error);
-        oo.Issue[1].Code.ShouldBe(OperationOutcomeJsonNode.IssueType.Value);
-        oo.Issue[1].Diagnostics.ShouldContain("Malformed date");
+        oo.Issue[0].SeverityCode.ShouldBe(OperationOutcomeIssue.IssueSeverityCode.Error);
+        oo.Issue[0].IssueTypeCode.ShouldBe(OperationOutcomeIssue.IssueTypeCommon.Invalid);
+        oo.Issue[0].Diagnostics!.ShouldContain("Unknown parameter");
+        oo.Issue[1].SeverityCode.ShouldBe(OperationOutcomeIssue.IssueSeverityCode.Error);
+        oo.Issue[1].IssueTypeCode.ShouldBe(OperationOutcomeIssue.IssueTypeCommon.Value);
+        oo.Issue[1].Diagnostics!.ShouldContain("Malformed date");
     }
 
     [Fact]
     public void BuildOutcomeForStrictRules_EmptyIssues_FallsBackToBuildOutcomeForRequest()
     {
-        var issues = new List<(StrictRuleCode, string, OperationOutcomeJsonNode.IssueType)>();
+        var issues = new List<(StrictRuleCode, string, OperationOutcomeIssue.IssueTypeCommon)>();
 
         var oo = SerializationUtils.BuildOutcomeForStrictRules(
             HttpStatusCode.InternalServerError,
@@ -108,6 +109,6 @@ public class SerializationUtilsTests
 
         oo.ResourceType.ShouldBe("OperationOutcome");
         oo.Issue.Count.ShouldBe(1);
-        oo.Issue[0].Diagnostics.ShouldContain("HTTP 500");
+        oo.Issue[0].Diagnostics!.ShouldContain("HTTP 500");
     }
 }

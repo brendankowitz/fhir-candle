@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -39,7 +40,7 @@ public class BundleProcessingTests
     };
 
     /// <summary>
-    /// Documents that <c>MutableJsonList&lt;BundleComponentJsonNode&gt;</c>'s indexer/enumerator do
+    /// Documents that <c>MutableJsonList&lt;BundleEntry&gt;</c>'s indexer/enumerator do
     /// NOT throw in practice, despite the type-mismatch theory flagged by Task 8 (reflection-based
     /// factory lookup for <c>(JsonObject, FhirVersion)</c> vs. the real <c>(JsonObject, FhirVersion?)</c>
     /// constructor). Empirically, <see cref="Type.GetConstructor(Type[])"/> resolves a formal
@@ -47,30 +48,30 @@ public class BundleProcessingTests
     /// type as a match (a documented .NET reflection default-binder behavior for <c>Nullable&lt;T&gt;</c>
     /// value-type parameters) - confirmed directly below via reflection, and via successful round-trip
     /// indexing/enumeration/LINQ over a reparsed bundle. This means <see cref="VersionedFhirStore"/>'s
-    /// bundle processing can use the typed <c>BundleJsonNode.Entry</c> list directly (foreach/LINQ),
+    /// bundle processing can use the typed <c>Bundle.Entry</c> list directly (foreach/LINQ),
     /// no raw <see cref="JsonArray"/> workaround needed.
     /// </summary>
     [Fact]
     public void MutableJsonListIndexerAndEnumerator_DoNotThrow()
     {
         Ignixa.Abstractions.FhirVersion nonNullable = default;
-        typeof(BundleComponentJsonNode)
+        typeof(BundleEntry)
             .GetConstructor(new[] { typeof(JsonObject), nonNullable.GetType() })
             .ShouldNotBeNull("Type.GetConstructor(Type[]) resolves FhirVersion? via the non-nullable FhirVersion Type token");
 
-        var bundle = new BundleJsonNode
+        var bundle = new Bundle
         {
             Id = "workaround-proof",
-            Type = BundleJsonNode.BundleType.Collection,
         };
+        bundle.SetTypeRaw("collection");
 
-        bundle.Entry.Add(new BundleComponentJsonNode
+        bundle.Entry.Add(new BundleEntry
         {
             FullUrl = "urn:uuid:aaaaaaaa-0000-0000-0000-000000000001",
             Resource = ResourceJsonNode.Parse("""{"resourceType":"Patient","id":"a"}"""),
         });
 
-        bundle.Entry.Add(new BundleComponentJsonNode
+        bundle.Entry.Add(new BundleEntry
         {
             FullUrl = "urn:uuid:bbbbbbbb-0000-0000-0000-000000000002",
             Resource = ResourceJsonNode.Parse("""{"resourceType":"Patient","id":"b"}"""),
@@ -79,17 +80,17 @@ public class BundleProcessingTests
         string json = bundle.SerializeToString();
 
         ResourceJsonNode reparsedGeneric = JsonSourceNodeFactory.Parse(json);
-        var reparsedBundle = new BundleJsonNode(reparsedGeneric.MutableNode, reparsedGeneric.FhirVersion);
+        var reparsedBundle = new Bundle(reparsedGeneric.MutableNode, reparsedGeneric.FhirVersion);
 
         // Indexer
         reparsedBundle.Entry[0].FullUrl.ShouldBe("urn:uuid:aaaaaaaa-0000-0000-0000-000000000001");
-        reparsedBundle.Entry[0].Resource.Id.ShouldBe("a");
+        reparsedBundle.Entry[0].Resource!.Id.ShouldBe("a");
 
         // Enumerator / foreach / LINQ (.ToList(), .Count())
-        List<BundleComponentJsonNode> viaLinq = reparsedBundle.Entry.ToList();
+        List<BundleEntry> viaLinq = reparsedBundle.Entry.ToList();
         viaLinq.Count.ShouldBe(2);
         viaLinq[1].FullUrl.ShouldBe("urn:uuid:bbbbbbbb-0000-0000-0000-000000000002");
-        viaLinq[1].Resource.Id.ShouldBe("b");
+        viaLinq[1].Resource!.Id.ShouldBe("b");
     }
 
     /// <summary>

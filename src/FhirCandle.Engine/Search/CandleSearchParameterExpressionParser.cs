@@ -51,39 +51,79 @@ public sealed class CandleSearchParameterExpressionParser : ISearchParameterExpr
 
         try
         {
-            if (searchParameter.Type == SearchParamType.Composite && modifier is null)
-            {
-                return ParseComposite(searchParameter, value);
-            }
-
-            if (searchParameter.Type == SearchParamType.Date &&
-                modifier is null &&
-                SplitEscaped(value, ',').Any(HasApPrefix))
-            {
-                return ParseDateWithAp(searchParameter, value);
-            }
-
-            if (searchParameter.Type == SearchParamType.Token &&
-                (modifier is null || modifier.SearchModifierCode == SearchModifierCode.Not))
-            {
-                value = StripEmptySystems(value);
-            }
-
-            if (searchParameter.Type == SearchParamType.Reference &&
-                modifier?.SearchModifierCode == SearchModifierCode.Type &&
-                HasContradictoryTypePrefix(value, modifier.ResourceType))
-            {
-                return Expression.SearchParameter(
-                    searchParameter,
-                    Expression.StringEquals(FieldName.ReferenceResourceId, null, "never-match", false));
-            }
-
-            return _inner.Parse(searchParameter, modifier, value);
+            return ParseCore(searchParameter, modifier, value).Expression;
         }
         catch (Exception ex) when (ex is BadSearchRequestException or FormatException or OverflowException)
         {
             throw new CandleMalformedSearchParameterException(searchParameter.Code, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Candle never asks for a search trace - <see cref="CandleSearchService"/> builds its search
+    /// options without a trace collector, which is the only path that reaches this method - so it
+    /// exists to satisfy the interface. Where candle defers to Ignixa the projection is Ignixa's;
+    /// where candle overrides, the inner parser rejects the value outright (which is why it is
+    /// overridden), so a flat span over the raw value is projected instead.
+    /// </summary>
+    public (Expression Expression, SyntaxNode ValueSyntax) ParseWithSyntax(
+        SearchParameterInfo searchParameter,
+        SearchModifier modifier,
+        string value)
+    {
+        ArgumentNullException.ThrowIfNull(searchParameter);
+
+        try
+        {
+            (Expression expression, string? delegatedValue) = ParseCore(searchParameter, modifier, value);
+
+            SyntaxNode syntax = delegatedValue is null
+                ? new SyntaxNode("Atomic", new SourceSpan(SourceOrigin.Value, 0, value?.Length ?? 0), [])
+                : _inner.ParseWithSyntax(searchParameter, modifier, delegatedValue).ValueSyntax;
+
+            return (expression, syntax);
+        }
+        catch (Exception ex) when (ex is BadSearchRequestException or FormatException or OverflowException)
+        {
+            throw new CandleMalformedSearchParameterException(searchParameter.Code, ex.Message);
+        }
+    }
+
+    /// <summary>Applies candle's overrides. <c>DelegatedValue</c> is the value actually handed to the
+    /// inner parser, or null when candle built the expression itself.</summary>
+    private (Expression Expression, string? DelegatedValue) ParseCore(
+        SearchParameterInfo searchParameter,
+        SearchModifier modifier,
+        string value)
+    {
+        if (searchParameter.Type == SearchParamType.Composite && modifier is null)
+        {
+            return (ParseComposite(searchParameter, value), null);
+        }
+
+        if (searchParameter.Type == SearchParamType.Date &&
+            modifier is null &&
+            SplitEscaped(value, ',').Any(HasApPrefix))
+        {
+            return (ParseDateWithAp(searchParameter, value), null);
+        }
+
+        if (searchParameter.Type == SearchParamType.Token &&
+            (modifier is null || modifier.SearchModifierCode == SearchModifierCode.Not))
+        {
+            value = StripEmptySystems(value);
+        }
+
+        if (searchParameter.Type == SearchParamType.Reference &&
+            modifier?.SearchModifierCode == SearchModifierCode.Type &&
+            HasContradictoryTypePrefix(value, modifier.ResourceType))
+        {
+            return (Expression.SearchParameter(
+                searchParameter,
+                Expression.StringEquals(FieldName.ReferenceResourceId, null, "never-match", false)), null);
+        }
+
+        return (_inner.Parse(searchParameter, modifier, value), value);
     }
 
     private Expression ParseDateWithAp(SearchParameterInfo searchParameter, string value)
@@ -216,7 +256,7 @@ public sealed class CandleSearchParameterExpressionParser : ISearchParameterExpr
                 }
 
                 string valueLiteral = SplitEscaped(literal, '|')[0];
-                expressions.Add(BuildNumberExpression(FieldName.Quantity, componentIndex, quantity.Low!.Value, valueLiteral, comparator));
+                expressions.Add(BuildNumberExpression(FieldName.QuantityLow, FieldName.QuantityHigh, componentIndex, quantity.Low!.Value, valueLiteral, comparator));
 
                 return expressions.Count == 1 ? expressions[0] : Expression.And([.. expressions]);
             }
@@ -225,7 +265,7 @@ public sealed class CandleSearchParameterExpressionParser : ISearchParameterExpr
             {
                 (SearchComparator comparator, string literal) = SplitComparator(value);
                 NumberSearchValue number = (NumberSearchValue)NumberSearchValue.Parse(literal);
-                return BuildNumberExpression(FieldName.Number, componentIndex, number.Low!.Value, literal, comparator);
+                return BuildNumberExpression(FieldName.NumberLow, FieldName.NumberHigh, componentIndex, number.Low!.Value, literal, comparator);
             }
 
             case SearchParamType.Date:
@@ -261,22 +301,24 @@ public sealed class CandleSearchParameterExpressionParser : ISearchParameterExpr
         }
     }
 
-    private static Expression BuildNumberExpression(FieldName fieldName, int componentIndex, decimal number, string literal, SearchComparator comparator)
+    // Ignixa split the single Number/Quantity field into Low/High bounds; which bound a comparator
+    // tests follows Ignixa's own builder - greater-than tests the high bound, less-than the low one.
+    private static Expression BuildNumberExpression(FieldName lowField, FieldName highField, int componentIndex, decimal number, string literal, SearchComparator comparator)
     {
         decimal precision = PrecisionModifier(literal);
 
         return comparator switch
         {
             SearchComparator.Eq => Expression.And(
-                Expression.GreaterThanOrEqual(fieldName, componentIndex, number - precision),
-                Expression.LessThanOrEqual(fieldName, componentIndex, number + precision)),
+                Expression.GreaterThanOrEqual(lowField, componentIndex, number - precision),
+                Expression.LessThanOrEqual(highField, componentIndex, number + precision)),
             SearchComparator.Ne => Expression.Or(
-                Expression.LessThan(fieldName, componentIndex, number - precision),
-                Expression.GreaterThan(fieldName, componentIndex, number + precision)),
-            SearchComparator.Ge => Expression.GreaterThanOrEqual(fieldName, componentIndex, number),
-            SearchComparator.Gt => Expression.GreaterThan(fieldName, componentIndex, number),
-            SearchComparator.Le => Expression.LessThanOrEqual(fieldName, componentIndex, number),
-            SearchComparator.Lt => Expression.LessThan(fieldName, componentIndex, number),
+                Expression.LessThan(lowField, componentIndex, number - precision),
+                Expression.GreaterThan(highField, componentIndex, number + precision)),
+            SearchComparator.Ge => Expression.GreaterThanOrEqual(highField, componentIndex, number),
+            SearchComparator.Gt => Expression.GreaterThan(highField, componentIndex, number),
+            SearchComparator.Le => Expression.LessThanOrEqual(lowField, componentIndex, number),
+            SearchComparator.Lt => Expression.LessThan(lowField, componentIndex, number),
             _ => throw new InvalidSearchOperationException($"Comparator {comparator} is not supported for composite number components."),
         };
     }

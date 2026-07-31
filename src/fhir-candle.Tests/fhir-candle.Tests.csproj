@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 	<Import Project="..\fhir-candle.props" />
 
 	<PropertyGroup>
@@ -76,4 +76,8 @@
 	<ItemGroup>
 		<Compile Remove="UcumTests.cs" />
 	</ItemGroup>
+  <ItemGroup>
+    <!-- MutableJsonNodeExtensions re-exposes the raw JSON node Ignixa made internal in 0.6.28. -->
+    <Using Include="FhirCandle.Serialization" />
+  </ItemGroup>
 </Project>

@@ -2,6 +2,7 @@ using System.Net;
 using FhirCandle.Strict;
 using FhirCandle.Utils;
 using Ignixa.Abstractions;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -77,19 +78,19 @@ public static class SerializationUtils
     private static string SerializeJson(ResourceJsonNode resource, bool pretty) =>
         resource.MutableNode.ToJsonString(pretty ? _relaxedIndentedJsonOptions : _relaxedJsonOptions);
 
-    public static OperationOutcomeJsonNode BuildOutcomeForRequest(
+    public static OperationOutcome BuildOutcomeForRequest(
         HttpStatusCode sc, string message,
-        OperationOutcomeJsonNode.IssueType? issueType = null)
+        OperationOutcomeIssue.IssueTypeCommon? issueType = null)
     {
-        var oo = new OperationOutcomeJsonNode { Id = Guid.NewGuid().ToString() };
-        var issue = new OperationOutcomeJsonNode.IssueComponent
+        var oo = new OperationOutcome { Id = Guid.NewGuid().ToString() };
+        var issue = new OperationOutcomeIssue
         {
-            Severity = ((int)sc >= 400)
-                ? OperationOutcomeJsonNode.IssueSeverity.Error
-                : OperationOutcomeJsonNode.IssueSeverity.Information,
-            Code = issueType ?? (sc == HttpStatusCode.NotFound
-                ? OperationOutcomeJsonNode.IssueType.NotFound
-                : OperationOutcomeJsonNode.IssueType.Processing),
+            SeverityCode = ((int)sc >= 400)
+                ? OperationOutcomeIssue.IssueSeverityCode.Error
+                : OperationOutcomeIssue.IssueSeverityCode.Information,
+            IssueTypeCode = issueType ?? (sc == HttpStatusCode.NotFound
+                ? OperationOutcomeIssue.IssueTypeCommon.NotFound
+                : OperationOutcomeIssue.IssueTypeCommon.Processing),
             Diagnostics = $"{message} (HTTP {(int)sc}: {sc})",
         };
 
@@ -105,41 +106,41 @@ public static class SerializationUtils
         return oo;
     }
 
-    public static OperationOutcomeJsonNode BuildOutcomeForStrictRule(
+    public static OperationOutcome BuildOutcomeForStrictRule(
         HttpStatusCode sc,
         string message,
         StrictRuleCode rule,
         FhirReleases.FhirSequenceCodes version,
-        OperationOutcomeJsonNode.IssueType? issueType = null)
+        OperationOutcomeIssue.IssueTypeCommon? issueType = null)
     {
         string url = StrictRule.GetSpecUrl(rule, version);
         string diagnostics = string.IsNullOrEmpty(url)
             ? message
             : $"{message} (see {url})";
-        return BuildOutcomeForRequest(sc, diagnostics, issueType ?? OperationOutcomeJsonNode.IssueType.Processing);
+        return BuildOutcomeForRequest(sc, diagnostics, issueType ?? OperationOutcomeIssue.IssueTypeCommon.Processing);
     }
 
-    public static OperationOutcomeJsonNode BuildOutcomeForStrictRules(
+    public static OperationOutcome BuildOutcomeForStrictRules(
         HttpStatusCode sc,
-        IEnumerable<(StrictRuleCode Rule, string Message, OperationOutcomeJsonNode.IssueType IssueType)> issues,
+        IEnumerable<(StrictRuleCode Rule, string Message, OperationOutcomeIssue.IssueTypeCommon IssueType)> issues,
         FhirReleases.FhirSequenceCodes version)
     {
-        var components = new List<OperationOutcomeJsonNode.IssueComponent>();
+        var components = new List<OperationOutcomeIssue>();
         var severity = ((int)sc < 400)
-            ? OperationOutcomeJsonNode.IssueSeverity.Information
-            : OperationOutcomeJsonNode.IssueSeverity.Error;
+            ? OperationOutcomeIssue.IssueSeverityCode.Information
+            : OperationOutcomeIssue.IssueSeverityCode.Error;
 
-        foreach ((StrictRuleCode rule, string message, OperationOutcomeJsonNode.IssueType issueType) in issues)
+        foreach ((StrictRuleCode rule, string message, OperationOutcomeIssue.IssueTypeCommon issueType) in issues)
         {
             string url = StrictRule.GetSpecUrl(rule, version);
             string diagnostics = string.IsNullOrEmpty(url)
                 ? message
                 : $"{message} (see {url})";
 
-            components.Add(new OperationOutcomeJsonNode.IssueComponent
+            components.Add(new OperationOutcomeIssue
             {
-                Severity = severity,
-                Code = issueType,
+                SeverityCode = severity,
+                IssueTypeCode = issueType,
                 Diagnostics = diagnostics,
             });
         }
@@ -149,7 +150,7 @@ public static class SerializationUtils
             return BuildOutcomeForRequest(sc, "No issues");
         }
 
-        var oo = new OperationOutcomeJsonNode { Id = Guid.NewGuid().ToString() };
+        var oo = new OperationOutcome { Id = Guid.NewGuid().ToString() };
         foreach (var component in components)
         {
             oo.Issue.Add(component);

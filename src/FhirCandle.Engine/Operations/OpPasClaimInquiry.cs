@@ -7,6 +7,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Serialization;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -77,7 +78,7 @@ public sealed class OpPasClaimInquiry : IFhirOperation
         out FhirResponseContext opResponse)
     {
         if (!PasOperationCommon.TryGetClaimCollection(
-            bodyResource, "PAS Claim Inquiry", "PASClaimInquiryBundle", out BundleJsonNode? requestBundle, out opResponse))
+            bodyResource, "PAS Claim Inquiry", "PASClaimInquiryBundle", out Bundle? requestBundle, out opResponse))
         {
             return false;
         }
@@ -86,7 +87,7 @@ public sealed class OpPasClaimInquiry : IFhirOperation
 
         var responseEntries = new JsonArray();
 
-        foreach (BundleComponentJsonNode entry in requestBundle.Entry)
+        foreach (BundleEntry entry in requestBundle.Entry)
         {
             if (entry.Resource is not { ResourceType: "Claim" } claimResource)
             {

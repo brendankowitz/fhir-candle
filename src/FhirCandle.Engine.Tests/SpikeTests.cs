@@ -28,12 +28,12 @@ public class SpikeTests
 
         ResourceJsonNode patient = JsonSourceNodeFactory.Parse(PatientJson);
         patient.Meta.VersionId = "1";
-        patient.Meta.LastUpdated = DateTimeOffset.UtcNow;
+        patient.Meta.LastUpdatedOffset = DateTimeOffset.UtcNow;
         patient.ResourceType.ShouldBe("Patient");
 
         var spManager = new SearchParameterDefinitionManager(
             schema, NullLogger<SearchParameterDefinitionManager>.Instance);
-        var indexer = SearchIndexerFactory.CreateInstance(schema, NullLoggerFactory.Instance, spManager);
+        var indexer = SearchIndexerFactory.CreateInstance(schema, NullLoggerFactory.Instance, spManager, NullFhirBaseUriProvider.Instance);
 
         IElement element = patient.ToElement(schema);
         IReadOnlyCollection<SearchIndexEntry> index = indexer.Extract(element);
@@ -43,7 +43,7 @@ public class SpikeTests
             () => spManager;
         var expressionParser = new ExpressionParser(
             resolver,
-            new SearchParameterExpressionParser(new ReferenceSearchValueParser(schema), schema),
+            new SearchParameterExpressionParser(new ReferenceSearchValueParser(schema, NullFhirBaseUriProvider.Instance), schema),
             schema);
         var builder = new SearchOptionsBuilder(expressionParser, spManager);
 

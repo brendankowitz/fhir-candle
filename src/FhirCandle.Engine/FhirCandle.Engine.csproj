@@ -6,6 +6,10 @@
     <RootNamespace>FhirCandle.Engine</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <!-- MutableJsonNodeExtensions re-exposes the raw JSON node Ignixa made internal in 0.6.28. -->
+    <Using Include="FhirCandle.Serialization" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Ignixa.Abstractions" Version="$(IgnixaVersion)" />
     <PackageReference Include="Ignixa.Serialization" Version="$(IgnixaVersion)" />
     <PackageReference Include="Ignixa.FhirPath" Version="$(IgnixaVersion)" />

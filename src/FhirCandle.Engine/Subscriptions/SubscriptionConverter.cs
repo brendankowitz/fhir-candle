@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using FhirCandle.Extensions;
 using FhirCandle.Models;
 using FhirCandle.Utils;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -776,7 +777,7 @@ public sealed class SubscriptionConverter
     /// <c>history</c> on R4/R4B, <c>subscription-notification</c> on R5; first entry is the status
     /// resource; <c>full-resource</c> content level adds focus/additional-context resource entries.
     /// </summary>
-    public BundleJsonNode? BundleForSubscriptionEvents(
+    public Bundle? BundleForSubscriptionEvents(
         ParsedSubscription subscription,
         IEnumerable<long> eventNumbers,
         string notificationType,
@@ -875,6 +876,6 @@ public sealed class SubscriptionConverter
             }
         }
 
-        return new BundleJsonNode(bundle);
+        return new Bundle(bundle);
     }
 }

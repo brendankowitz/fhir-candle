@@ -7,6 +7,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Serialization;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -77,7 +78,7 @@ public sealed class OpConvert : IFhirOperation
             opResponse = new()
             {
                 StatusCode = HttpStatusCode.UnprocessableEntity,
-                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Body is empty", OperationOutcomeJsonNode.IssueType.Structure),
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Body is empty", OperationOutcomeIssue.IssueTypeCommon.Structure),
             };
             return false;
         }
@@ -87,7 +88,7 @@ public sealed class OpConvert : IFhirOperation
             opResponse = new()
             {
                 StatusCode = HttpStatusCode.UnprocessableEntity,
-                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Content is not parseable as FHIR", OperationOutcomeJsonNode.IssueType.Structure),
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Content is not parseable as FHIR", OperationOutcomeIssue.IssueTypeCommon.Structure),
             };
             return false;
         }

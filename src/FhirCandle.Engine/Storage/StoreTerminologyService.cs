@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using Ignixa.Abstractions;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -200,15 +201,15 @@ public sealed class StoreTerminologyService
 
     private static ResourceJsonNode BuildResult(bool result, string? message)
     {
-        var output = new ParametersJsonNode();
+        var output = new Parameters();
 
-        var resultParam = new ParameterJsonNode { Name = "result" };
+        var resultParam = new ParametersParameter { Name = "result" };
         resultParam.SetValue("valueBoolean", JsonValue.Create(result));
         output.Parameter.Add(resultParam);
 
         if (!string.IsNullOrEmpty(message))
         {
-            var messageParam = new ParameterJsonNode { Name = "message" };
+            var messageParam = new ParametersParameter { Name = "message" };
             messageParam.SetValue("valueString", JsonValue.Create(message));
             output.Parameter.Add(messageParam);
         }

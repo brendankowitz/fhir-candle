@@ -4,6 +4,7 @@ using FhirCandle.Search;
 using FhirCandle.Serialization;
 using FhirCandle.Storage;
 using Ignixa.Abstractions;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -45,7 +46,7 @@ public class ResourceStoreTests
         ResourceStore store = CreateStore("Patient", search);
         ResourceJsonNode patient = Parse("""{"resourceType":"Patient"}""");
 
-        ResourceJsonNode? created = store.InstanceCreate(Ctx(), patient, allowExistingId: false, out HttpStatusCode sc, out OperationOutcomeJsonNode outcome);
+        ResourceJsonNode? created = store.InstanceCreate(Ctx(), patient, allowExistingId: false, out HttpStatusCode sc, out OperationOutcome outcome);
 
         sc.ShouldBe(HttpStatusCode.Created);
         created.ShouldNotBeNull();
@@ -65,7 +66,7 @@ public class ResourceStoreTests
         ResourceJsonNode updateGood = Parse("""{"resourceType":"Patient","id":"p1","active":true}""");
         ResourceJsonNode? updated = store.InstanceUpdate(
             updateGood, allowCreate: false, ifMatch: "W/\"1\"", ifNoneMatch: "", protectedResources: [],
-            out HttpStatusCode sc, out OperationOutcomeJsonNode outcome);
+            out HttpStatusCode sc, out OperationOutcome outcome);
 
         sc.ShouldBe(HttpStatusCode.OK);
         updated.ShouldNotBeNull();
@@ -74,7 +75,7 @@ public class ResourceStoreTests
         ResourceJsonNode updateStale = Parse("""{"resourceType":"Patient","id":"p1","active":false}""");
         ResourceJsonNode? rejected = store.InstanceUpdate(
             updateStale, allowCreate: false, ifMatch: "W/\"9\"", ifNoneMatch: "", protectedResources: [],
-            out HttpStatusCode staleSc, out OperationOutcomeJsonNode staleOutcome);
+            out HttpStatusCode staleSc, out OperationOutcome staleOutcome);
 
         staleSc.ShouldBe(HttpStatusCode.PreconditionFailed);
         rejected.ShouldBeNull();

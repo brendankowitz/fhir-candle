@@ -7,6 +7,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Serialization;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -75,10 +76,10 @@ public sealed class OpSubscriptionHook : IFhirOperation
         ResourceJsonNode? bodyResource,
         out FhirResponseContext opResponse)
     {
-        BundleJsonNode? bundle = bodyResource switch
+        Bundle? bundle = bodyResource switch
         {
-            BundleJsonNode typed => typed,
-            not null when bodyResource.ResourceType == "Bundle" => new BundleJsonNode(bodyResource.MutableNode, bodyResource.FhirVersion),
+            Bundle typed => typed,
+            not null when bodyResource.ResourceType == "Bundle" => new Bundle(bodyResource.MutableNode, bodyResource.FhirVersion),
             _ => null,
         };
 
@@ -87,7 +88,7 @@ public sealed class OpSubscriptionHook : IFhirOperation
             opResponse = new()
             {
                 StatusCode = HttpStatusCode.UnprocessableEntity,
-                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Posted content is not a valid Subscription notification bundle", OperationOutcomeJsonNode.IssueType.Structure),
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Posted content is not a valid Subscription notification bundle", OperationOutcomeIssue.IssueTypeCommon.Structure),
             };
             return false;
         }
@@ -104,7 +105,7 @@ public sealed class OpSubscriptionHook : IFhirOperation
             opResponse = new()
             {
                 StatusCode = HttpStatusCode.UnprocessableEntity,
-                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Posted content is not a valid Subscription notification bundle", OperationOutcomeJsonNode.IssueType.Structure),
+                Outcome = SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.UnprocessableEntity, "Posted content is not a valid Subscription notification bundle", OperationOutcomeIssue.IssueTypeCommon.Structure),
             };
             return false;
         }
@@ -113,7 +114,7 @@ public sealed class OpSubscriptionHook : IFhirOperation
         // store's conflict response and must not register a second received notification
         ResourceJsonNode? stored = null;
         HttpStatusCode createStatus = HttpStatusCode.InternalServerError;
-        OperationOutcomeJsonNode? createOutcome = null;
+        OperationOutcome? createOutcome = null;
 
         if (store.GetStore("Bundle") is { } bundleStore)
         {

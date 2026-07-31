@@ -8,6 +8,7 @@ using FhirCandle.Search;
 using FhirCandle.Serialization;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation;
+using Ignixa.Models;
 using Ignixa.Search.Indexing;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
@@ -248,7 +249,7 @@ public sealed class ResourceStore : IVersionedResourceStore
         ResourceJsonNode source,
         bool allowExistingId,
         out HttpStatusCode statusCode,
-        out OperationOutcomeJsonNode outcome)
+        out OperationOutcome outcome)
     {
         if (source is null || source.ResourceType != _resourceName)
         {
@@ -282,12 +283,12 @@ public sealed class ResourceStore : IVersionedResourceStore
                 outcome = SerializationUtils.BuildOutcomeForRequest(
                     statusCode,
                     $"Resource {_resourceName}/{source.Id} already exists; POST-base create interaction cannot overwrite existing resources",
-                    OperationOutcomeJsonNode.IssueType.Duplicate);
+                    OperationOutcomeIssue.IssueTypeCommon.Duplicate);
                 return null;
             }
 
             source.Meta.VersionId = "1";
-            source.Meta.LastUpdated = DateTimeOffset.UtcNow;
+            source.Meta.LastUpdatedOffset = DateTimeOffset.UtcNow;
 
             if (!_resourceStore.TryAdd(source.Id, source))
             {
@@ -318,7 +319,7 @@ public sealed class ResourceStore : IVersionedResourceStore
         string ifNoneMatch,
         HashSet<string> protectedResources,
         out HttpStatusCode sc,
-        out OperationOutcomeJsonNode outcome)
+        out OperationOutcome outcome)
     {
         if (source is null || source.ResourceType != _resourceName)
         {
@@ -402,7 +403,7 @@ public sealed class ResourceStore : IVersionedResourceStore
                 return null;
             }
 
-            source.Meta.LastUpdated = DateTimeOffset.UtcNow;
+            source.Meta.LastUpdatedOffset = DateTimeOffset.UtcNow;
 
             _resourceStore[source.Id] = source;
             _indexes[source.Id] = _search.Index(source.ToElement(_schema));
@@ -851,7 +852,7 @@ public sealed class ResourceStore : IVersionedResourceStore
         }
     }
 
-    private (HttpStatusCode StatusCode, OperationOutcomeJsonNode Outcome)? ValidateSpecialCase(ResourceJsonNode source)
+    private (HttpStatusCode StatusCode, OperationOutcome Outcome)? ValidateSpecialCase(ResourceJsonNode source)
     {
         switch (_resourceName)
         {
@@ -886,7 +887,7 @@ public sealed class ResourceStore : IVersionedResourceStore
 
         return null;
 
-        static (HttpStatusCode, OperationOutcomeJsonNode) Fail(string message) =>
+        static (HttpStatusCode, OperationOutcome) Fail(string message) =>
             (HttpStatusCode.BadRequest, SerializationUtils.BuildOutcomeForRequest(HttpStatusCode.BadRequest, message));
     }
 

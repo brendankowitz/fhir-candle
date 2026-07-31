@@ -1,4 +1,4 @@
-﻿// <copyright file="FhirStoreTestsR5Resource.cs" company="Microsoft Corporation">
+// <copyright file="FhirStoreTestsR5Resource.cs" company="Microsoft Corporation">
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 //     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // </copyright>
@@ -12,6 +12,7 @@ using Xunit.Abstractions;
 using fhir.candle.Tests.Extensions;
 using Shouldly;
 using System.Net;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -1217,7 +1218,7 @@ public class R5TestSubscriptions : IClassFixture<R5Tests>
         r.ShouldNotBeNull();
         r!.ResourceType.ShouldBe("Bundle");
 
-        BundleJsonNode notificationBundle = new BundleJsonNode(r.MutableNode, r.FhirVersion);
+        Bundle notificationBundle = new Bundle(r.MutableNode, r.FhirVersion);
         ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle(notificationBundle);
 
         s.ShouldNotBeNull();

@@ -21,4 +21,8 @@
 	<ItemGroup>
 		<ProjectReference Include="..\FhirCandle.Engine\FhirCandle.Engine.csproj" />
 	</ItemGroup>
+  <ItemGroup>
+    <!-- MutableJsonNodeExtensions re-exposes the raw JSON node Ignixa made internal in 0.6.28. -->
+    <Using Include="FhirCandle.Serialization" />
+  </ItemGroup>
 </Project>

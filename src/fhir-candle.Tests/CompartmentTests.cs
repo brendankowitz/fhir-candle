@@ -3,6 +3,7 @@ using FhirCandle.Storage;
 using FhirCandle.Utils;
 using fhir.candle.Tests.Extensions;
 using Xunit.Abstractions;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -95,7 +96,7 @@ public class AuthCompartmentTests: IDisposable
         compartmentBundleCount.ShouldBe(searchBundleCount);
     }
 
-    private BundleJsonNode SearchResource(VersionedFhirStore versionedFhirStore, String search )
+    private Bundle SearchResource(VersionedFhirStore versionedFhirStore, String search )
     {
         FhirRequestContext ctx = new()
         {
@@ -126,7 +127,7 @@ public class AuthCompartmentTests: IDisposable
         ResourceJsonNode result = JsonSourceNodeFactory.Parse(response.SerializedResource);
         result.ResourceType.ShouldBe("Bundle");
 
-        return new BundleJsonNode(result.MutableNode, result.FhirVersion);
+        return new Bundle(result.MutableNode, result.FhirVersion);
     }
 
     private void putResource(VersionedFhirStore versionedFhirStore, ResourceJsonNode resource)

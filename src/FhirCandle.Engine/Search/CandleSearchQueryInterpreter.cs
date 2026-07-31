@@ -38,9 +38,15 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
 
         string parameterName = expression.Parameter.Name;
 
+        // Ignixa's parser now emits typed predicate leaves (SearchParameterPredicateExpression,
+        // CompositeComponentExpression) rather than the field-level shape this interpreter evaluates;
+        // LowerToLegacy is the SDK's bridge back to it. Candle's own parser overrides already build
+        // field-level expressions, which the rewriter passes through unchanged.
+        Expression parameterExpression = LegacyExpressionLowerer.LowerToLegacy(expression.Expression);
+
         if (parameterName == "_type")
         {
-            return input => input.Where(x => MatchesResourceType(expression.Expression, x.Location.ResourceType));
+            return input => input.Where(x => MatchesResourceType(parameterExpression, x.Location.ResourceType));
         }
 
         // _id is intrinsic to ResourceKey rather than FHIRPath-derived, so - unlike ordinary search
@@ -49,19 +55,19 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
         // its code ("_id").
         if (expression.Parameter.Code == "_id")
         {
-            return input => input.Where(x => MatchesId(expression.Expression, x.Location.Id));
+            return input => input.Where(x => MatchesId(parameterExpression, x.Location.Id));
         }
 
         // Token :not compiles to Not(equality) inside the parameter expression; FHIR semantics
         // require "no entry matches" (including resources without the parameter), not "any entry
         // that differs", so negate the whole existence check.
-        if (expression.Expression is NotExpression not)
+        if (parameterExpression is NotExpression not)
         {
             Func<SearchIndexEntry, bool> negated = CompileEntryMatcher(not.Expression);
             return input => input.Where(x => !x.Index.Any(y => y.SearchParameter.Name == parameterName && negated(y)));
         }
 
-        Func<SearchIndexEntry, bool> matcher = CompileEntryMatcher(expression.Expression);
+        Func<SearchIndexEntry, bool> matcher = CompileEntryMatcher(parameterExpression);
         return input => input.Where(x => x.Index.Any(y => y.SearchParameter.Name == parameterName && matcher(y)));
     }
 
@@ -191,7 +197,7 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
 
     private static IReadOnlyList<ISearchValue> ResolveValues(ISearchValue value, int? componentIndex)
     {
-        if (componentIndex is int index && value is CompositeSearchValue composite)
+        if (componentIndex is int index && value is CompositeIndexSearchValue composite)
         {
             return index < composite.Components.Count ? composite.Components[index] : [];
         }
@@ -298,9 +304,9 @@ public sealed class CandleSearchQueryInterpreter : IExpressionVisitorWithInitial
                 Satisfies(date.Start.CompareTo((DateTimeOffset)expression.Value), expression.BinaryOperator),
             (FieldName.DateTimeEnd, DateTimeSearchValue date) =>
                 Satisfies(date.End.CompareTo((DateTimeOffset)expression.Value), expression.BinaryOperator),
-            (FieldName.Number, NumberSearchValue number) =>
+            (FieldName.NumberLow or FieldName.NumberHigh, NumberSearchValue number) =>
                 CompareRange(number.Low, number.High, (decimal)expression.Value, expression.BinaryOperator),
-            (FieldName.Quantity, QuantitySearchValue quantity) =>
+            (FieldName.QuantityLow or FieldName.QuantityHigh, QuantitySearchValue quantity) =>
                 CompareRange(quantity.Low, quantity.High, (decimal)expression.Value, expression.BinaryOperator),
             _ => false,
         };

@@ -5,6 +5,7 @@
 
 using FhirCandle.Models;
 using FhirCandle.Search;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using System.Net;
@@ -42,7 +43,7 @@ public interface IVersionedResourceStore : IResourceStore, IDisposable, IReadOnl
         ResourceJsonNode source,
         bool allowExistingId,
         out HttpStatusCode statusCode,
-        out OperationOutcomeJsonNode outcome);
+        out OperationOutcome outcome);
 
     /// <summary>Update a specific instance of a resource.</summary>
     /// <param name="source">            The resource.</param>
@@ -60,7 +61,7 @@ public interface IVersionedResourceStore : IResourceStore, IDisposable, IReadOnl
         string ifNoneMatch,
         HashSet<string> protectedResources,
         out HttpStatusCode sc,
-        out OperationOutcomeJsonNode outcome);
+        out OperationOutcome outcome);
 
     /// <summary>Instance delete.</summary>
     /// <param name="id">                The identifier.</param>

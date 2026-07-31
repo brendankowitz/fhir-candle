@@ -8,6 +8,7 @@ using System.Text.Json.Nodes;
 using FhirCandle.Models;
 using FhirCandle.Storage;
 using FhirCandle.Utils;
+using Ignixa.Models;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Shouldly;
@@ -375,7 +376,7 @@ public class SubscriptionTests
         Store(store, "Subscription", R4SubscriptionJson);
         Store(store, "Encounter", EncounterJson(FhirReleases.FhirSequenceCodes.R4, "finished"));
 
-        BundleJsonNode? bundle = store.BundleForSubscriptionEvents("sub-r4-encounter", [], "event-notification");
+        Bundle? bundle = store.BundleForSubscriptionEvents("sub-r4-encounter", [], "event-notification");
 
         bundle.ShouldNotBeNull();
         bundle!.MutableNode["type"]!.GetValue<string>().ShouldBe("history");
@@ -400,7 +401,7 @@ public class SubscriptionTests
         Store(store, "Subscription", R5SubscriptionJson);
         Store(store, "Encounter", EncounterJson(FhirReleases.FhirSequenceCodes.R5, "completed"));
 
-        BundleJsonNode? bundle = store.BundleForSubscriptionEvents("sub-r5-encounter", [], "event-notification");
+        Bundle? bundle = store.BundleForSubscriptionEvents("sub-r5-encounter", [], "event-notification");
 
         bundle.ShouldNotBeNull();
         bundle!.MutableNode["type"]!.GetValue<string>().ShouldBe("subscription-notification");

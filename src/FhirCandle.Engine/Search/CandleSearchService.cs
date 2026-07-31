@@ -42,7 +42,7 @@ public sealed class CandleSearchService
         _schema = schema;
         Definitions = new SearchParameterDefinitionManager(schema, loggerFactory.CreateLogger<SearchParameterDefinitionManager>());
 
-        _referenceParser = new ReferenceSearchValueParser(schema);
+        _referenceParser = new ReferenceSearchValueParser(schema, NullFhirBaseUriProvider.Instance);
 
         ISearchParameterDefinitionManager.SearchableSearchParameterDefinitionManagerResolver resolver = () => Definitions;
         _expressionParser = new ExpressionParser(

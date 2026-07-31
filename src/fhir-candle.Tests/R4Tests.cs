@@ -13,6 +13,7 @@ using fhir.candle.Tests.Extensions;
 using Shouldly;
 using System.Net;
 using fhir.candle.Services;
+using Ignixa.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
@@ -2249,7 +2250,7 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
         r.ShouldNotBeNull();
         r!.ResourceType.ShouldBe("Bundle");
 
-        BundleJsonNode notificationBundle = new BundleJsonNode(r.MutableNode, r.FhirVersion);
+        Bundle notificationBundle = new Bundle(r.MutableNode, r.FhirVersion);
         ParsedSubscriptionStatus? s = ((VersionedFhirStore)_fixture._store).ParseNotificationBundle(notificationBundle);
 
         s.ShouldNotBeNull();
@@ -2426,7 +2427,7 @@ public class R4TestSubscriptions : IClassFixture<R4Tests>
         parsed.ShouldNotBeNull();
         parsed!.ResourceType.ShouldBe("Bundle");
 
-        BundleJsonNode bundle = new BundleJsonNode(parsed.MutableNode, parsed.FhirVersion);
+        Bundle bundle = new Bundle(parsed.MutableNode, parsed.FhirVersion);
         bundle.Id = "hook-dup-handshake";
 
         VersionedFhirStore versionedStore = (VersionedFhirStore)_fixture._store;
