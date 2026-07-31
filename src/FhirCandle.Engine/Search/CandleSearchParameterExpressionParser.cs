@@ -120,7 +120,7 @@ public sealed class CandleSearchParameterExpressionParser : ISearchParameterExpr
         {
             return (Expression.SearchParameter(
                 searchParameter,
-                Expression.StringEquals(FieldName.ReferenceResourceId, null, "never-match", false)), null);
+                Expression.StringEquals(FieldName.ReferenceResourceId, null, "never-match", false)), null);
         }
 
         return (_inner.Parse(searchParameter, modifier, value), value);
